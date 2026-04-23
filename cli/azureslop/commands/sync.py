@@ -4,12 +4,20 @@ AzureSlop sync server.
 Endpoints (called by the Studio plugin every ~5 seconds):
 
   GET  /changes?since=<unix_timestamp>
-       Returns a list of files changed on disk since that timestamp.
-       Response: { "changes": [ { "path": "ServerScriptService/Light1/ControlScript", "source": "..." }, ... ] }
+       Returns files changed or deleted on disk since that timestamp.
+       Response: {
+         "changes":   [ { "path": "...", "source": "...", "type": "Script|LocalScript|ModuleScript", "timestamp": 0 }, ... ],
+         "deletions": [ "ServerScriptService/Light1/ControlScript", ... ]
+       }
 
   POST /update
        Receives script changes from Studio and writes them to disk.
-       Body: { "changes": [ { "path": "ServerScriptService/Light1/ControlScript", "source": "...", "timestamp": 1234567890.0 }, ... ] }
+       Body: { "changes": [ { "path": "...", "source": "...", "timestamp": 0 }, ... ] }
+       Response: { "ok": true }
+
+  POST /delete
+       Receives paths of scripts deleted in Studio and removes them from disk.
+       Body: { "paths": [ "ServerScriptService/Light1/ControlScript", ... ] }
        Response: { "ok": true }
 
   GET  /config
@@ -21,18 +29,16 @@ import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Lock
 from urllib.parse import urlparse, parse_qs
 
 from azureslop.config import load_config, CONFIG_FILE
 from azureslop.watcher import FileWatcher
 
-# path -> last modified timestamp for writes we made ourselves
-# used to avoid echo-looping (we write a file, watcher sees it, don't send it back)
+# Tracks writes/deletes we made ourselves to break echo-loops.
+# Both dicts are protected by _watcher.lock (set in cmd_sync).
 _our_writes: dict[str, float] = {}
-_lock = Lock()
+_our_deletes: dict[str, float] = {}
 
-# The file watcher instance (set in cmd_sync)
 _watcher: "FileWatcher | None" = None
 _project_root: str = ""
 
@@ -65,6 +71,14 @@ def _file_to_script_path(abs_path: str) -> str | None:
     return None
 
 
+def _infer_type(abs_path: str) -> str:
+    if abs_path.endswith(".server.lua"):
+        return "Script"
+    if abs_path.endswith(".client.lua"):
+        return "LocalScript"
+    return "ModuleScript"
+
+
 class SyncHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -75,42 +89,57 @@ class SyncHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/changes":
             params = parse_qs(parsed.query)
             since = float(params.get("since", ["0"])[0])
-            changes = self._get_changes_since(since)
-            self._send_json({"changes": changes})
+            changes, deletions = self._get_changes_since(since)
+            self._send_json({"changes": changes, "deletions": deletions})
 
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_POST(self):
-        if self.path != "/update":
+        parsed = urlparse(self.path)
+
+        if parsed.path == "/update":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                data = json.loads(body)
+                self._apply_updates(data.get("changes", []))
+                self._send_json({"ok": True})
+            except Exception as e:
+                print(f"[ERROR] /update failed: {e}")
+                self.send_response(500)
+                self.end_headers()
+
+        elif parsed.path == "/delete":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                data = json.loads(body)
+                self._handle_deletes(data.get("paths", []))
+                self._send_json({"ok": True})
+            except Exception as e:
+                print(f"[ERROR] /delete failed: {e}")
+                self.send_response(500)
+                self.end_headers()
+
+        else:
             self.send_response(404)
             self.end_headers()
-            return
 
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length)
-
-        try:
-            data = json.loads(body)
-            self._apply_updates(data.get("changes", []))
-            self._send_json({"ok": True})
-        except Exception as e:
-            print(f"[ERROR] /update failed: {e}")
-            self.send_response(500)
-            self.end_headers()
-
-    def _get_changes_since(self, since: float) -> list[dict]:
+    def _get_changes_since(self, since: float) -> tuple[list[dict], list[str]]:
         if _watcher is None:
-            return []
+            return [], []
+
         changes = []
-        with _lock:
+        deletions = []
+
+        with _watcher.lock:
             for abs_path, mtime in list(_watcher.changed_files.items()):
                 if mtime <= since:
                     continue
                 # Skip files we wrote ourselves (avoid echo loop)
-                our_ts = _our_writes.get(abs_path, 0)
-                if abs(mtime - our_ts) < 0.5:
+                if abs(mtime - _our_writes.get(abs_path, 0)) < 0.5:
                     continue
                 rel = _file_to_script_path(abs_path)
                 if rel is None:
@@ -121,11 +150,23 @@ class SyncHandler(BaseHTTPRequestHandler):
                     changes.append({
                         "path": rel,
                         "source": source,
+                        "type": _infer_type(abs_path),
                         "timestamp": mtime,
                     })
                 except Exception:
                     pass
-        return changes
+
+            for abs_path, mtime in list(_watcher.deleted_files.items()):
+                if mtime <= since:
+                    continue
+                # Skip files we deleted ourselves (avoid echo loop)
+                if abs(mtime - _our_deletes.get(abs_path, 0)) < 0.5:
+                    continue
+                rel = _file_to_script_path(abs_path)
+                if rel is not None:
+                    deletions.append(rel)
+
+        return changes, deletions
 
     def _apply_updates(self, changes: list[dict]):
         for change in changes:
@@ -141,12 +182,30 @@ class SyncHandler(BaseHTTPRequestHandler):
                 os.makedirs(os.path.dirname(abs_path), exist_ok=True)
                 with open(abs_path, "w", encoding="utf-8") as f:
                     f.write(source)
-                now = time.time()
-                with _lock:
-                    _our_writes[abs_path] = now
+                with _watcher.lock:
+                    _our_writes[abs_path] = time.time()
                 print(f"[sync] Studio → disk: {rel_path}")
             else:
                 print(f"[skip] Disk is newer, skipping: {rel_path}")
+
+    def _handle_deletes(self, rel_paths: list[str]):
+        for rel_path in rel_paths:
+            abs_path = _script_path_to_file(rel_path)
+            if not os.path.exists(abs_path):
+                continue
+            os.remove(abs_path)
+            with _watcher.lock:
+                _our_deletes[abs_path] = time.time()
+                _watcher.changed_files.pop(abs_path, None)
+            # Remove empty parent dirs up to project root
+            parent = os.path.dirname(abs_path)
+            try:
+                while parent != _project_root and not os.listdir(parent):
+                    os.rmdir(parent)
+                    parent = os.path.dirname(parent)
+            except OSError:
+                pass
+            print(f"[sync] Studio → disk: deleted {rel_path}")
 
     def _send_json(self, data: dict):
         body = json.dumps(data).encode("utf-8")

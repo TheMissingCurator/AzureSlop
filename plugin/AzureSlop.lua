@@ -1,4 +1,4 @@
--- AzureSlop Plugin v0.1
+-- AzureSlop Plugin v0.2
 -- Polls the CLI sync server every 5 seconds for bidirectional script sync
 
 local HttpService = game:GetService("HttpService")
@@ -7,10 +7,17 @@ local POLL_INTERVAL = 5  -- seconds
 
 -- ─── State ───────────────────────────────────────────────────────────────────
 
-local serverUrl = nil       -- set after fetching config
-local lastSyncTime = 0      -- unix timestamp of last successful sync
+local serverUrl = nil
+local lastSyncTime = 0
 local connected = false
-local services = {}         -- list of service names to watch, from config
+local services = {}
+
+-- Change-detection cache: path -> last source string we pushed to disk.
+-- Avoids re-sending scripts that haven't changed.
+local _scriptCache = {}
+
+-- Set of paths we know about. Missing paths on the next collect = deleted.
+local _knownPaths = {}
 
 -- ─── Toolbar / Widget ────────────────────────────────────────────────────────
 
@@ -125,7 +132,6 @@ local function getScriptPath(instance)
 	local parts = { instance.Name }
 	local current = instance.Parent
 	while current and not current:IsA("ServiceProvider") do
-		-- Stop climbing when we hit a watched service
 		local isService = false
 		for _, svcName in ipairs(services) do
 			if current.Name == svcName and current.Parent == game then
@@ -147,6 +153,8 @@ end
 
 local function collectAllScripts()
 	local results = {}
+	local conflicts = {}  -- paths where siblings disagree on source
+
 	for _, svcName in ipairs(services) do
 		local ok, svc = pcall(function() return game:GetService(svcName) end)
 		if ok and svc then
@@ -155,7 +163,11 @@ local function collectAllScripts()
 					local ok2, src = pcall(function() return inst.Source end)
 					if ok2 then
 						local path = getScriptPath(inst)
-						-- Deduplicate: if path already exists, last one wins (they should be identical)
+						if results[path] and results[path].source ~= src then
+							-- Two same-named siblings with different sources.
+							-- Last one wins on disk; flag for the user so they know.
+							conflicts[path] = true
+						end
 						results[path] = {
 							path = path,
 							source = src,
@@ -170,7 +182,14 @@ local function collectAllScripts()
 			recurse(svc)
 		end
 	end
-	-- Flatten to array
+
+	for path in pairs(conflicts) do
+		warn(string.format(
+			"[AzureSlop] Dedup conflict: multiple scripts at '%s' have different sources — last-write wins on disk",
+			path
+		))
+	end
+
 	local arr = {}
 	for _, v in pairs(results) do
 		table.insert(arr, v)
@@ -180,9 +199,13 @@ end
 
 -- ─── Apply incoming changes from disk to Studio ──────────────────────────────
 
-local function applyChanges(changes)
-	if #changes == 0 then return end
+-- Handles three cases for each incoming change:
+--   1. Matching instances exist → update their Source
+--   2. No instance found       → create a new script in the hierarchy
+-- And for each incoming deletion:
+--   3. Matching instances exist → destroy them
 
+local function applyChanges(changes, deletions)
 	-- Build a lookup: path -> all matching script instances
 	local scriptMap = {}
 	for _, svcName in ipairs(services) do
@@ -202,21 +225,78 @@ local function applyChanges(changes)
 		end
 	end
 
-	local count = 0
+	-- Handle deletions from disk
+	for _, path in ipairs(deletions) do
+		local instances = scriptMap[path]
+		if instances then
+			for _, inst in ipairs(instances) do
+				pcall(function() inst:Destroy() end)
+			end
+			_scriptCache[path] = nil
+			_knownPaths[path] = nil
+			print(string.format("[AzureSlop] Disk → Studio: deleted %s", path))
+		end
+	end
+
+	if #changes == 0 then return end
+
+	local updated = 0
+	local created = 0
+
 	for _, change in ipairs(changes) do
 		local path = change.path
 		local source = change.source
 		local instances = scriptMap[path]
-		if instances then
+
+		if instances and #instances > 0 then
 			for _, inst in ipairs(instances) do
 				local ok = pcall(function() inst.Source = source end)
-				if ok then count = count + 1 end
+				if ok then updated = updated + 1 end
+			end
+			_scriptCache[path] = source
+			_knownPaths[path] = true
+		else
+			-- New file on disk — create the corresponding script instance
+			local parts = {}
+			for part in path:gmatch("[^/]+") do
+				table.insert(parts, part)
+			end
+			if #parts >= 2 then
+				local svcName = parts[1]
+				local ok, svc = pcall(function() return game:GetService(svcName) end)
+				if ok and svc then
+					local parent = svc
+					-- Walk/create intermediate folders
+					for i = 2, #parts - 1 do
+						local folderName = parts[i]
+						local existing = parent:FindFirstChild(folderName)
+						if not existing then
+							local folder = Instance.new("Folder")
+							folder.Name = folderName
+							folder.Parent = parent
+							existing = folder
+						end
+						parent = existing
+					end
+					local scriptType = change.type or "ModuleScript"
+					local scriptName = parts[#parts]
+					local newScript = Instance.new(scriptType)
+					newScript.Name = scriptName
+					newScript.Source = source
+					newScript.Parent = parent
+					_scriptCache[path] = source
+					_knownPaths[path] = true
+					created = created + 1
+				end
 			end
 		end
 	end
 
-	if count > 0 then
-		print(string.format("[AzureSlop] Disk → Studio: %d script(s) updated", count))
+	if updated > 0 then
+		print(string.format("[AzureSlop] Disk → Studio: %d script(s) updated", updated))
+	end
+	if created > 0 then
+		print(string.format("[AzureSlop] Disk → Studio: %d script(s) created", created))
 	end
 end
 
@@ -248,11 +328,15 @@ local function syncLoop()
 		print("[AzureSlop] Connected to " .. (config.name or "project") .. " on port " .. port)
 	end
 
-	-- On first connect, push everything from Studio to disk
+	-- On first connect, push everything from Studio to disk and seed the cache
 	if firstConnect then
 		firstConnect = false
 		print("[AzureSlop] First connect — pushing all scripts to disk...")
 		local allScripts = collectAllScripts()
+		for _, entry in ipairs(allScripts) do
+			_scriptCache[entry.path] = entry.source
+			_knownPaths[entry.path] = true
+		end
 		if #allScripts > 0 then
 			local payload = HttpService:JSONEncode({ changes = allScripts })
 			pcall(function()
@@ -265,22 +349,53 @@ local function syncLoop()
 		return
 	end
 
-	-- Pull changes from disk
+	-- Pull changes from disk (updates, creations, deletions)
 	local ok2, resp2 = pcall(function()
 		return HttpService:GetAsync(serverUrl .. "/changes?since=" .. lastSyncTime, false)
 	end)
 	if ok2 then
 		local data = HttpService:JSONDecode(resp2)
-		applyChanges(data.changes or {})
+		applyChanges(data.changes or {}, data.deletions or {})
 	end
 
-	-- Push changes from Studio to disk
+	-- Collect current Studio scripts and compute diffs against last push
 	local allScripts = collectAllScripts()
-	if #allScripts > 0 then
-		local payload = HttpService:JSONEncode({ changes = allScripts })
+
+	local currentPaths = {}
+	local diffs = {}
+	for _, entry in ipairs(allScripts) do
+		currentPaths[entry.path] = true
+		if _scriptCache[entry.path] ~= entry.source then
+			table.insert(diffs, entry)
+			_scriptCache[entry.path] = entry.source
+		end
+	end
+
+	-- Detect scripts deleted in Studio since the last tick
+	local deletedPaths = {}
+	for path in pairs(_knownPaths) do
+		if not currentPaths[path] then
+			table.insert(deletedPaths, path)
+			_scriptCache[path] = nil
+		end
+	end
+	_knownPaths = currentPaths
+
+	-- Push only changed scripts
+	if #diffs > 0 then
+		local payload = HttpService:JSONEncode({ changes = diffs })
 		pcall(function()
 			HttpService:PostAsync(serverUrl .. "/update", payload, Enum.HttpContentType.ApplicationJson, false)
 		end)
+	end
+
+	-- Notify server of Studio-side deletions
+	if #deletedPaths > 0 then
+		local payload = HttpService:JSONEncode({ paths = deletedPaths })
+		pcall(function()
+			HttpService:PostAsync(serverUrl .. "/delete", payload, Enum.HttpContentType.ApplicationJson, false)
+		end)
+		print(string.format("[AzureSlop] Studio → disk: %d script(s) deleted", #deletedPaths))
 	end
 
 	lastSyncTime = os.time()
@@ -309,6 +424,8 @@ local function stopPolling()
 	connected = false
 	firstConnect = true
 	lastSyncTime = 0
+	_scriptCache = {}
+	_knownPaths = {}
 	setStatus("Not connected", "Run `azureslop sync` in your project folder", Color3.fromRGB(100,100,110))
 end
 
