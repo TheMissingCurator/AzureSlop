@@ -19,6 +19,11 @@ local _scriptCache = {}
 -- Set of paths we know about. Missing paths on the next collect = deleted.
 local _knownPaths = {}
 
+-- When disk changes are applied to Studio in a tick, skip the outbound push
+-- for that same tick. This prevents the just-applied disk content from
+-- immediately racing back to disk and resetting the echo-filter baseline.
+local _skipPushThisTick = false
+
 -- ─── Toolbar / Widget ────────────────────────────────────────────────────────
 
 local toolbar = plugin:CreateToolbar("AzureSlop")
@@ -298,6 +303,9 @@ local function applyChanges(changes, deletions)
 	if created > 0 then
 		print(string.format("[AzureSlop] Disk → Studio: %d script(s) created", created))
 	end
+	if updated > 0 or created > 0 or #deletions > 0 then
+		_skipPushThisTick = true
+	end
 end
 
 -- ─── Main sync loop ──────────────────────────────────────────────────────────
@@ -350,6 +358,7 @@ local function syncLoop()
 	end
 
 	-- Pull changes from disk (updates, creations, deletions)
+	_skipPushThisTick = false
 	local ok2, resp2 = pcall(function()
 		return HttpService:GetAsync(serverUrl .. "/changes?since=" .. lastSyncTime, false)
 	end)
@@ -358,46 +367,50 @@ local function syncLoop()
 		applyChanges(data.changes or {}, data.deletions or {})
 	end
 
-	-- Collect current Studio scripts and compute diffs against last push
+	-- Collect current Studio scripts and compute diffs against last push.
+	-- Skipped when disk changes were applied this tick to avoid the just-written
+	-- content racing back to disk and resetting the echo-filter baseline.
 	local allScripts = collectAllScripts()
-
 	local currentPaths = {}
-	local diffs = {}
 	for _, entry in ipairs(allScripts) do
 		currentPaths[entry.path] = true
-		if _scriptCache[entry.path] ~= entry.source then
-			table.insert(diffs, entry)
-			_scriptCache[entry.path] = entry.source
+	end
+
+	if not _skipPushThisTick then
+		local diffs = {}
+		for _, entry in ipairs(allScripts) do
+			if _scriptCache[entry.path] ~= entry.source then
+				table.insert(diffs, entry)
+				_scriptCache[entry.path] = entry.source
+			end
+		end
+
+		-- Detect scripts deleted in Studio since the last tick
+		local deletedPaths = {}
+		for path in pairs(_knownPaths) do
+			if not currentPaths[path] then
+				table.insert(deletedPaths, path)
+				_scriptCache[path] = nil
+			end
+		end
+
+		if #diffs > 0 then
+			local payload = HttpService:JSONEncode({ changes = diffs })
+			pcall(function()
+				HttpService:PostAsync(serverUrl .. "/update", payload, Enum.HttpContentType.ApplicationJson, false)
+			end)
+		end
+
+		if #deletedPaths > 0 then
+			local payload = HttpService:JSONEncode({ paths = deletedPaths })
+			pcall(function()
+				HttpService:PostAsync(serverUrl .. "/delete", payload, Enum.HttpContentType.ApplicationJson, false)
+			end)
+			print(string.format("[AzureSlop] Studio → disk: %d script(s) deleted", #deletedPaths))
 		end
 	end
 
-	-- Detect scripts deleted in Studio since the last tick
-	local deletedPaths = {}
-	for path in pairs(_knownPaths) do
-		if not currentPaths[path] then
-			table.insert(deletedPaths, path)
-			_scriptCache[path] = nil
-		end
-	end
 	_knownPaths = currentPaths
-
-	-- Push only changed scripts
-	if #diffs > 0 then
-		local payload = HttpService:JSONEncode({ changes = diffs })
-		pcall(function()
-			HttpService:PostAsync(serverUrl .. "/update", payload, Enum.HttpContentType.ApplicationJson, false)
-		end)
-	end
-
-	-- Notify server of Studio-side deletions
-	if #deletedPaths > 0 then
-		local payload = HttpService:JSONEncode({ paths = deletedPaths })
-		pcall(function()
-			HttpService:PostAsync(serverUrl .. "/delete", payload, Enum.HttpContentType.ApplicationJson, false)
-		end)
-		print(string.format("[AzureSlop] Studio → disk: %d script(s) deleted", #deletedPaths))
-	end
-
 	lastSyncTime = os.time()
 	setLastSync()
 end
@@ -426,6 +439,7 @@ local function stopPolling()
 	lastSyncTime = 0
 	_scriptCache = {}
 	_knownPaths = {}
+	_skipPushThisTick = false
 	setStatus("Not connected", "Run `azureslop sync` in your project folder", Color3.fromRGB(100,100,110))
 end
 
