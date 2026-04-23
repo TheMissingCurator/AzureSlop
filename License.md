@@ -1,4 +1,4 @@
-COPYRIGHT (c) [Year] SLOP ENTERPRISES (An Unincorporated, Non-LLC Syndicate of Digital Production)
+COPYRIGHT (c) [2026] SLOP ENTERPRISES (An Unincorporated, Non-LLC Syndicate of Digital Production)
 ALL RIGHTS RESERVED, RETAINED, AND HOARDED.
 
 PREAMBLE & DEFINITIONS:
