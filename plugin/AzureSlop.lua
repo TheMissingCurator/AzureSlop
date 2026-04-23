@@ -19,11 +19,6 @@ local _scriptCache = {}
 -- Set of paths we know about. Missing paths on the next collect = deleted.
 local _knownPaths = {}
 
--- When disk changes are applied to Studio in a tick, skip the outbound push
--- for that same tick. This prevents the just-applied disk content from
--- immediately racing back to disk and resetting the echo-filter baseline.
-local _skipPushThisTick = false
-
 -- ─── Toolbar / Widget ────────────────────────────────────────────────────────
 
 local toolbar = plugin:CreateToolbar("AzureSlop")
@@ -205,10 +200,12 @@ end
 -- ─── Apply incoming changes from disk to Studio ──────────────────────────────
 
 -- Handles three cases for each incoming change:
---   1. Matching instances exist → update their Source
---   2. No instance found       → create a new script in the hierarchy
+--   1. Matching instances exist, no unsent Studio edits → update Source
+--   2. Matching instances exist, user has unsent Studio edits → skip (push
+--      phase will win and send the Studio version to disk this same tick)
+--   3. No instance found → create a new script in the hierarchy
 -- And for each incoming deletion:
---   3. Matching instances exist → destroy them
+--   4. Matching instances exist → destroy them
 
 local function applyChanges(changes, deletions)
 	-- Build a lookup: path -> all matching script instances
@@ -246,6 +243,7 @@ local function applyChanges(changes, deletions)
 	if #changes == 0 then return end
 
 	local updated = 0
+	local skipped = 0
 	local created = 0
 
 	for _, change in ipairs(changes) do
@@ -255,11 +253,25 @@ local function applyChanges(changes, deletions)
 
 		if instances and #instances > 0 then
 			for _, inst in ipairs(instances) do
-				local ok = pcall(function() inst.Source = source end)
-				if ok then updated = updated + 1 end
+				local ok2, currentSrc = pcall(function() return inst.Source end)
+				if ok2 then
+					-- If the script has been edited in Studio since our last push
+					-- (_scriptCache differs from the live source), the user has
+					-- unsent work. Don't overwrite it — the push phase below will
+					-- send the Studio version to disk this same tick.
+					local hasUnsentEdits = (_scriptCache[path] ~= nil) and (currentSrc ~= _scriptCache[path])
+					if not hasUnsentEdits then
+						local ok = pcall(function() inst.Source = source end)
+						if ok then
+							updated = updated + 1
+							_scriptCache[path] = source
+							_knownPaths[path] = true
+						end
+					else
+						skipped = skipped + 1
+					end
+				end
 			end
-			_scriptCache[path] = source
-			_knownPaths[path] = true
 		else
 			-- New file on disk — create the corresponding script instance
 			local parts = {}
@@ -303,8 +315,8 @@ local function applyChanges(changes, deletions)
 	if created > 0 then
 		print(string.format("[AzureSlop] Disk → Studio: %d script(s) created", created))
 	end
-	if updated > 0 or created > 0 or #deletions > 0 then
-		_skipPushThisTick = true
+	if skipped > 0 then
+		print(string.format("[AzureSlop] Disk → Studio: %d script(s) skipped (unsent Studio edits take priority)", skipped))
 	end
 end
 
@@ -357,8 +369,9 @@ local function syncLoop()
 		return
 	end
 
-	-- Pull changes from disk (updates, creations, deletions)
-	_skipPushThisTick = false
+	-- Pull changes from disk (updates, creations, deletions).
+	-- applyChanges() guards against overwriting unsent Studio edits, so
+	-- it is always safe to run the push phase immediately afterward.
 	local ok2, resp2 = pcall(function()
 		return HttpService:GetAsync(serverUrl .. "/changes?since=" .. lastSyncTime, false)
 	end)
@@ -367,50 +380,43 @@ local function syncLoop()
 		applyChanges(data.changes or {}, data.deletions or {})
 	end
 
-	-- Collect current Studio scripts and compute diffs against last push.
-	-- Skipped when disk changes were applied this tick to avoid the just-written
-	-- content racing back to disk and resetting the echo-filter baseline.
+	-- Push Studio changes to disk (only scripts whose source changed)
 	local allScripts = collectAllScripts()
 	local currentPaths = {}
+	local diffs = {}
 	for _, entry in ipairs(allScripts) do
 		currentPaths[entry.path] = true
-	end
-
-	if not _skipPushThisTick then
-		local diffs = {}
-		for _, entry in ipairs(allScripts) do
-			if _scriptCache[entry.path] ~= entry.source then
-				table.insert(diffs, entry)
-				_scriptCache[entry.path] = entry.source
-			end
-		end
-
-		-- Detect scripts deleted in Studio since the last tick
-		local deletedPaths = {}
-		for path in pairs(_knownPaths) do
-			if not currentPaths[path] then
-				table.insert(deletedPaths, path)
-				_scriptCache[path] = nil
-			end
-		end
-
-		if #diffs > 0 then
-			local payload = HttpService:JSONEncode({ changes = diffs })
-			pcall(function()
-				HttpService:PostAsync(serverUrl .. "/update", payload, Enum.HttpContentType.ApplicationJson, false)
-			end)
-		end
-
-		if #deletedPaths > 0 then
-			local payload = HttpService:JSONEncode({ paths = deletedPaths })
-			pcall(function()
-				HttpService:PostAsync(serverUrl .. "/delete", payload, Enum.HttpContentType.ApplicationJson, false)
-			end)
-			print(string.format("[AzureSlop] Studio → disk: %d script(s) deleted", #deletedPaths))
+		if _scriptCache[entry.path] ~= entry.source then
+			table.insert(diffs, entry)
+			_scriptCache[entry.path] = entry.source
 		end
 	end
 
+	-- Detect scripts deleted in Studio since the last tick
+	local deletedPaths = {}
+	for path in pairs(_knownPaths) do
+		if not currentPaths[path] then
+			table.insert(deletedPaths, path)
+			_scriptCache[path] = nil
+		end
+	end
 	_knownPaths = currentPaths
+
+	if #diffs > 0 then
+		local payload = HttpService:JSONEncode({ changes = diffs })
+		pcall(function()
+			HttpService:PostAsync(serverUrl .. "/update", payload, Enum.HttpContentType.ApplicationJson, false)
+		end)
+	end
+
+	if #deletedPaths > 0 then
+		local payload = HttpService:JSONEncode({ paths = deletedPaths })
+		pcall(function()
+			HttpService:PostAsync(serverUrl .. "/delete", payload, Enum.HttpContentType.ApplicationJson, false)
+		end)
+		print(string.format("[AzureSlop] Studio → disk: %d script(s) deleted", #deletedPaths))
+	end
+
 	lastSyncTime = os.time()
 	setLastSync()
 end
@@ -439,7 +445,6 @@ local function stopPolling()
 	lastSyncTime = 0
 	_scriptCache = {}
 	_knownPaths = {}
-	_skipPushThisTick = false
 	setStatus("Not connected", "Run `azureslop sync` in your project folder", Color3.fromRGB(100,100,110))
 end
 

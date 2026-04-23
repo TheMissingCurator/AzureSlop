@@ -182,8 +182,10 @@ class SyncHandler(BaseHTTPRequestHandler):
                 os.makedirs(os.path.dirname(abs_path), exist_ok=True)
                 with open(abs_path, "w", encoding="utf-8") as f:
                     f.write(source)
+                # Store the file's actual mtime so the echo filter can do an
+                # exact-match comparison rather than a fragile timing window.
                 with _watcher.lock:
-                    _our_writes[abs_path] = time.time()
+                    _our_writes[abs_path] = os.path.getmtime(abs_path)
                 print(f"[sync] Studio → disk: {rel_path}")
             else:
                 print(f"[skip] Disk is newer, skipping: {rel_path}")

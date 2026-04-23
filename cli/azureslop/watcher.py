@@ -21,8 +21,12 @@ class _Handler(FileSystemEventHandler):
     def _handle(self, path: str):
         if not path.endswith(".lua"):
             return
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return  # file vanished before we could stat it
         with self._lock:
-            self._changed[path] = time.time()
+            self._changed[path] = mtime
             self._deleted.pop(path, None)  # un-delete if re-created
 
     def _handle_delete(self, path: str):
