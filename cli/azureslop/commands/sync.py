@@ -43,18 +43,27 @@ _watcher: "FileWatcher | None" = None
 _project_root: str = ""
 
 
-def _script_path_to_file(rel_path: str) -> str:
+_TYPE_TO_EXT = {
+    "Script": ".server.lua",
+    "LocalScript": ".client.lua",
+    "ModuleScript": ".module.lua",
+}
+# Order matters: check longer/specific extensions before the legacy catch-all.
+_KNOWN_EXTS = (".server.lua", ".client.lua", ".module.lua", ".lua")
+
+
+def _script_path_to_file(rel_path: str, script_type: str = "") -> str:
     """
     Convert a script path like 'ServerScriptService/Light1/ControlScript'
-    to an absolute file path, inferring the .lua extension from context.
-    The file may be .server.lua, .client.lua, or .lua — we search for whichever exists.
+    to an absolute file path. Searches for an existing file first; for new
+    files uses script_type to pick the right extension.
     """
-    for ext in (".server.lua", ".client.lua", ".lua"):
+    for ext in _KNOWN_EXTS:
         candidate = os.path.join(_project_root, rel_path + ext)
         if os.path.exists(candidate):
             return candidate
-    # Default to .lua if nothing exists yet
-    return os.path.join(_project_root, rel_path + ".lua")
+    ext = _TYPE_TO_EXT.get(script_type, ".module.lua")
+    return os.path.join(_project_root, rel_path + ext)
 
 
 def _file_to_script_path(abs_path: str) -> str | None:
@@ -65,7 +74,7 @@ def _file_to_script_path(abs_path: str) -> str | None:
     rel = os.path.relpath(abs_path, _project_root)
     if rel.startswith(".."):
         return None
-    for ext in (".server.lua", ".client.lua", ".lua"):
+    for ext in _KNOWN_EXTS:
         if rel.endswith(ext):
             return rel[: -len(ext)]
     return None
@@ -173,8 +182,9 @@ class SyncHandler(BaseHTTPRequestHandler):
             rel_path = change.get("path", "")
             source = change.get("source", "")
             studio_ts = float(change.get("timestamp", 0))
+            script_type = change.get("type", "ModuleScript")
 
-            abs_path = _script_path_to_file(rel_path)
+            abs_path = _script_path_to_file(rel_path, script_type)
             disk_ts = os.path.getmtime(abs_path) if os.path.exists(abs_path) else 0
 
             # Last write wins

@@ -110,15 +110,6 @@ local function setLastSync()
 	lastSyncLabel.Text = "Last sync: " .. os.date("%H:%M:%S")
 end
 
--- ─── Script extension helper ─────────────────────────────────────────────────
-
-local function getExtension(instance)
-	if instance:IsA("Script") then return ".server.lua"
-	elseif instance:IsA("LocalScript") then return ".client.lua"
-	else return ".lua"
-	end
-end
-
 -- ─── Build path from instance up to service ──────────────────────────────────
 
 local function getScriptPath(instance)
@@ -164,6 +155,7 @@ local function collectAllScripts()
 						results[path] = {
 							path = path,
 							source = src,
+							type = inst.ClassName,
 							timestamp = os.time(),
 						}
 					end
