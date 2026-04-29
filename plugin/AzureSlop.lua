@@ -294,6 +294,7 @@ local function syncLoop()
 
 	if not ok then
 		connected = false
+		firstConnect = true
 		setStatus("Not connected", "Run `azureslop sync` in your project folder", Color3.fromRGB(180,60,60))
 		return
 	end
