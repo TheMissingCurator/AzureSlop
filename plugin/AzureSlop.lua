@@ -1,5 +1,5 @@
--- AzureSlop Plugin v0.3
--- Polls the CLI sync server every 5 seconds; disk is the sole source of truth
+-- AzureSlop Plugin v0.4
+-- Disk (VS Code) wins for existing scripts. Studio can create new scripts.
 
 local HttpService = game:GetService("HttpService")
 
@@ -11,6 +11,10 @@ local serverUrl = nil
 local lastSyncTime = 0
 local connected = false
 local services = {}
+
+-- Paths we know exist on disk. Seeded on first connect, kept in sync as disk
+-- changes arrive. Any Studio script NOT in this set is new and gets pushed.
+local _diskPaths = {}
 
 -- ─── Toolbar / Widget ────────────────────────────────────────────────────────
 
@@ -137,7 +141,7 @@ end
 
 local function collectAllScripts()
 	local results = {}
-	local conflicts = {}  -- paths where siblings disagree on source
+	local conflicts = {}
 
 	for _, svcName in ipairs(services) do
 		local ok, svc = pcall(function() return game:GetService(svcName) end)
@@ -148,8 +152,6 @@ local function collectAllScripts()
 					if ok2 then
 						local path = getScriptPath(inst)
 						if results[path] and results[path].source ~= src then
-							-- Two same-named siblings with different sources.
-							-- Last one wins on disk; flag for the user so they know.
 							conflicts[path] = true
 						end
 						results[path] = {
@@ -184,11 +186,8 @@ end
 
 -- ─── Apply incoming changes from disk to Studio ──────────────────────────────
 
--- Disk is the sole source of truth. For each incoming change:
---   1. Matching instances exist → update Source on ALL of them (dedup propagation)
---   2. No instance found → create a new script in the hierarchy
--- For each incoming deletion:
---   3. Matching instances exist → destroy all of them
+-- Disk wins for existing scripts. Each change also updates _diskPaths so the
+-- push phase below knows not to treat these as new Studio-created scripts.
 
 local function applyChanges(changes, deletions)
 	-- Build a lookup: path -> all matching script instances
@@ -212,6 +211,7 @@ local function applyChanges(changes, deletions)
 
 	-- Handle deletions from disk
 	for _, path in ipairs(deletions) do
+		_diskPaths[path] = nil
 		local instances = scriptMap[path]
 		if instances then
 			for _, inst in ipairs(instances) do
@@ -230,6 +230,8 @@ local function applyChanges(changes, deletions)
 		local path = change.path
 		local source = change.source
 		local instances = scriptMap[path]
+
+		_diskPaths[path] = true
 
 		if instances and #instances > 0 then
 			-- Update every instance that shares this path (e.g. all Door/DoorScript)
@@ -308,11 +310,15 @@ local function syncLoop()
 		print("[AzureSlop] Connected to " .. (config.name or "project") .. " on port " .. port)
 	end
 
-	-- On first connect, snapshot Studio → disk so VS Code has a starting state
+	-- On first connect, push all Studio scripts to disk and record them in
+	-- _diskPaths so the per-tick push phase only catches genuinely new scripts.
 	if firstConnect then
 		firstConnect = false
 		print("[AzureSlop] First connect — pushing all scripts to disk...")
 		local allScripts = collectAllScripts()
+		for _, entry in ipairs(allScripts) do
+			_diskPaths[entry.path] = true
+		end
 		if #allScripts > 0 then
 			local payload = HttpService:JSONEncode({ changes = allScripts })
 			pcall(function()
@@ -325,13 +331,30 @@ local function syncLoop()
 		return
 	end
 
-	-- Pull changes from disk and apply to Studio (disk is sole source of truth)
+	-- Pull disk changes → Studio (disk wins for existing scripts)
 	local ok2, resp2 = pcall(function()
 		return HttpService:GetAsync(serverUrl .. "/changes?since=" .. lastSyncTime, false)
 	end)
 	if ok2 then
 		local data = HttpService:JSONDecode(resp2)
 		applyChanges(data.changes or {}, data.deletions or {})
+	end
+
+	-- Push new Studio scripts to disk (scripts whose path isn't on disk yet)
+	local allScripts = collectAllScripts()
+	local newScripts = {}
+	for _, entry in ipairs(allScripts) do
+		if not _diskPaths[entry.path] then
+			table.insert(newScripts, entry)
+			_diskPaths[entry.path] = true
+		end
+	end
+	if #newScripts > 0 then
+		local payload = HttpService:JSONEncode({ changes = newScripts })
+		pcall(function()
+			HttpService:PostAsync(serverUrl .. "/update", payload, Enum.HttpContentType.ApplicationJson, false)
+		end)
+		print(string.format("[AzureSlop] Studio → disk: %d new script(s)", #newScripts))
 	end
 
 	lastSyncTime = os.time()
@@ -360,6 +383,7 @@ local function stopPolling()
 	connected = false
 	firstConnect = true
 	lastSyncTime = 0
+	_diskPaths = {}
 	setStatus("Not connected", "Run `azureslop sync` in your project folder", Color3.fromRGB(100,100,110))
 end
 
