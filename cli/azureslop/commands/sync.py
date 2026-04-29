@@ -232,7 +232,7 @@ class SyncHandler(BaseHTTPRequestHandler):
         pass
 
 
-def cmd_sync():
+def cmd_sync(port_override: int | None = None):
     global _watcher, _project_root
 
     cwd = os.getcwd()
@@ -245,7 +245,7 @@ def cmd_sync():
 
     config = load_config(cwd)
     _project_root = cwd
-    port = config.get("port", 25123)
+    port = port_override if port_override is not None else config.get("port", 25123)
 
     print(f"AzureSlop Sync")
     print(f"  Project : {config.get('name', 'Unknown')}")
