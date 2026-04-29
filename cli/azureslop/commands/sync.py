@@ -99,6 +99,10 @@ class SyncHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             since = float(params.get("since", ["0"])[0])
             changes, deletions = self._get_changes_since(since)
+            if changes:
+                print(f"[sync] Disk → Studio: {len(changes)} script(s) updated")
+            if deletions:
+                print(f"[sync] Disk → Studio: {len(deletions)} script(s) deleted")
             self._send_json({"changes": changes, "deletions": deletions})
 
         else:
