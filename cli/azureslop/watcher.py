@@ -1,5 +1,5 @@
 """
-Watches the project directory for .lua file changes.
+Watches the project directory for Roblox source file changes.
 Maintains a dict of { abs_path -> mtime } for changed files,
 and { abs_path -> mtime } for deleted files.
 """
@@ -11,6 +11,16 @@ from threading import Lock
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+WATCHED_EXTS = (
+    ".server.lua", ".client.lua", ".module.lua", ".lua",
+    ".stringvalue", ".numbervalue", ".intvalue", ".boolvalue",
+    ".remoteevent", ".remotefunction", ".bindableevent", ".bindablefunction",
+)
+
+
+def _is_watched(path: str) -> bool:
+    return any(path.endswith(ext) for ext in WATCHED_EXTS)
+
 
 class _Handler(FileSystemEventHandler):
     def __init__(self, changed_files: dict, deleted_files: dict, lock: Lock):
@@ -19,7 +29,7 @@ class _Handler(FileSystemEventHandler):
         self._lock = lock
 
     def _handle(self, path: str):
-        if not path.endswith(".lua"):
+        if not _is_watched(path):
             return
         try:
             mtime = os.path.getmtime(path)
@@ -30,7 +40,7 @@ class _Handler(FileSystemEventHandler):
             self._deleted.pop(path, None)  # un-delete if re-created
 
     def _handle_delete(self, path: str):
-        if not path.endswith(".lua"):
+        if not _is_watched(path):
             return
         with self._lock:
             self._deleted[path] = time.time()
@@ -61,10 +71,10 @@ class FileWatcher:
         self.changed_files: dict[str, float] = {}
         self.deleted_files: dict[str, float] = {}
 
-        # Seed with all existing .lua files
+        # Seed with all existing watched files
         for dirpath, _, filenames in os.walk(root):
             for fname in filenames:
-                if fname.endswith(".lua"):
+                if _is_watched(fname):
                     abs_path = os.path.join(dirpath, fname)
                     self.changed_files[abs_path] = os.path.getmtime(abs_path)
 

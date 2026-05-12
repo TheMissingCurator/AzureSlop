@@ -5,7 +5,7 @@ local HttpService = game:GetService("HttpService")
 
 local POLL_INTERVAL = 5  -- seconds
 
--- ─── State ───────────────────────────────────────────────────────────────────
+-- ─── State ───────────────────────────────────────────────────────────────────────────────
 
 local serverUrl = nil
 local lastSyncTime = 0
@@ -13,10 +13,19 @@ local connected = false
 local services = {}
 
 -- Paths we know exist on disk. Seeded on first connect, kept in sync as disk
--- changes arrive. Any Studio script NOT in this set is new and gets pushed.
+-- changes arrive. Any Studio instance NOT in this set is new and gets pushed.
 local _diskPaths = {}
 
--- ─── Toolbar / Widget ────────────────────────────────────────────────────────
+-- Non-script instance types we track alongside scripts
+local VALUE_TYPES = {
+	StringValue = true, NumberValue = true, IntValue = true, BoolValue = true,
+}
+local EVENT_TYPES = {
+	RemoteEvent = true, RemoteFunction = true,
+	BindableEvent = true, BindableFunction = true,
+}
+
+-- ─── Toolbar / Widget ─────────────────────────────────────────────────────────────────────
 
 local toolbar = plugin:CreateToolbar("AzureSlop")
 local toggleBtn = toolbar:CreateButton("AzureSlop", "Toggle AzureSlop panel", "rbxassetid://4458901886")
@@ -114,7 +123,7 @@ local function setLastSync()
 	lastSyncLabel.Text = "Last sync: " .. os.date("%H:%M:%S")
 end
 
--- ─── Build path from instance up to service ──────────────────────────────────
+-- ─── Build path from instance up to service ──────────────────────────────────────────────
 
 local function getScriptPath(instance)
 	local parts = { instance.Name }
@@ -137,11 +146,18 @@ local function getScriptPath(instance)
 	return table.concat(parts, "/")
 end
 
--- ─── Collect all scripts from watched services ───────────────────────────────
+-- ─── Collect all tracked instances from watched services ─────────────────────────────
 
-local function collectAllScripts()
+local function collectAll()
 	local results = {}
 	local conflicts = {}
+
+	local function track(path, source, className)
+		if results[path] and results[path].source ~= source then
+			conflicts[path] = true
+		end
+		results[path] = { path = path, source = source, type = className, timestamp = os.time() }
+	end
 
 	for _, svcName in ipairs(services) do
 		local ok, svc = pcall(function() return game:GetService(svcName) end)
@@ -149,18 +165,12 @@ local function collectAllScripts()
 			local function recurse(inst)
 				if inst:IsA("LuaSourceContainer") then
 					local ok2, src = pcall(function() return inst.Source end)
-					if ok2 then
-						local path = getScriptPath(inst)
-						if results[path] and results[path].source ~= src then
-							conflicts[path] = true
-						end
-						results[path] = {
-							path = path,
-							source = src,
-							type = inst.ClassName,
-							timestamp = os.time(),
-						}
-					end
+					if ok2 then track(getScriptPath(inst), src, inst.ClassName) end
+				elseif VALUE_TYPES[inst.ClassName] then
+					local ok2, val = pcall(function() return tostring(inst.Value) end)
+					if ok2 then track(getScriptPath(inst), val, inst.ClassName) end
+				elseif EVENT_TYPES[inst.ClassName] then
+					track(getScriptPath(inst), "", inst.ClassName)
 				end
 				for _, child in ipairs(inst:GetChildren()) do
 					recurse(child)
@@ -172,19 +182,17 @@ local function collectAllScripts()
 
 	for path in pairs(conflicts) do
 		warn(string.format(
-			"[AzureSlop] Dedup conflict: multiple scripts at '%s' have different sources — last-write wins on disk",
+			"[AzureSlop] Dedup conflict: multiple instances at '%s' have different values — last-write wins on disk",
 			path
 		))
 	end
 
 	local arr = {}
-	for _, v in pairs(results) do
-		table.insert(arr, v)
-	end
+	for _, v in pairs(results) do table.insert(arr, v) end
 	return arr
 end
 
--- ─── Apply incoming changes from disk to Studio ──────────────────────────────
+-- ─── Apply incoming changes from disk to Studio ──────────────────────────────────────────────
 
 -- Disk wins for existing scripts. Each change also updates _diskPaths so the
 -- push phase below knows not to treat these as new Studio-created scripts.
@@ -196,7 +204,9 @@ local function applyChanges(changes, deletions)
 		local ok, svc = pcall(function() return game:GetService(svcName) end)
 		if ok and svc then
 			local function recurse(inst)
-				if inst:IsA("LuaSourceContainer") then
+				if inst:IsA("LuaSourceContainer")
+					or VALUE_TYPES[inst.ClassName]
+					or EVENT_TYPES[inst.ClassName] then
 					local path = getScriptPath(inst)
 					if not scriptMap[path] then scriptMap[path] = {} end
 					table.insert(scriptMap[path], inst)
@@ -236,11 +246,22 @@ local function applyChanges(changes, deletions)
 		if instances and #instances > 0 then
 			-- Update every instance that shares this path (e.g. all Door/DoorScript)
 			for _, inst in ipairs(instances) do
-				pcall(function() inst.Source = source end)
+				if inst:IsA("LuaSourceContainer") then
+					pcall(function() inst.Source = source end)
+				elseif inst.ClassName == "StringValue" then
+					pcall(function() inst.Value = source end)
+				elseif inst.ClassName == "NumberValue" then
+					pcall(function() inst.Value = tonumber(source) or 0 end)
+				elseif inst.ClassName == "IntValue" then
+					pcall(function() inst.Value = math.floor(tonumber(source) or 0) end)
+				elseif inst.ClassName == "BoolValue" then
+					pcall(function() inst.Value = source == "true" end)
+				end
+				-- EVENT_TYPES: no value to update, existence is enough
 			end
 			updated = updated + #instances
 		else
-			-- New file on disk — create the corresponding script instance
+			-- New file on disk — create the corresponding instance
 			local parts = {}
 			for part in path:gmatch("[^/]+") do
 				table.insert(parts, part)
@@ -261,12 +282,22 @@ local function applyChanges(changes, deletions)
 						end
 						parent = existing
 					end
-					local scriptType = change.type or "ModuleScript"
-					local scriptName = parts[#parts]
-					local newScript = Instance.new(scriptType)
-					newScript.Name = scriptName
-					newScript.Source = source
-					newScript.Parent = parent
+					local instType = change.type or "ModuleScript"
+					local instName = parts[#parts]
+					local newInst = Instance.new(instType)
+					newInst.Name = instName
+					if newInst:IsA("LuaSourceContainer") then
+						newInst.Source = source
+					elseif instType == "StringValue" then
+						newInst.Value = source
+					elseif instType == "NumberValue" then
+						newInst.Value = tonumber(source) or 0
+					elseif instType == "IntValue" then
+						newInst.Value = math.floor(tonumber(source) or 0)
+					elseif instType == "BoolValue" then
+						newInst.Value = source == "true"
+					end
+					newInst.Parent = parent
 					created = created + 1
 				end
 			end
@@ -281,7 +312,7 @@ local function applyChanges(changes, deletions)
 	end
 end
 
--- ─── Main sync loop ──────────────────────────────────────────────────────────
+-- ─── Main sync loop ───────────────────────────────────────────────────────────────────────────────
 
 local firstConnect = true
 
@@ -315,7 +346,7 @@ local function syncLoop()
 	if firstConnect then
 		firstConnect = false
 		print("[AzureSlop] First connect — pushing all scripts to disk...")
-		local allScripts = collectAllScripts()
+		local allScripts = collectAll()
 		for _, entry in ipairs(allScripts) do
 			_diskPaths[entry.path] = true
 		end
@@ -341,7 +372,7 @@ local function syncLoop()
 	end
 
 	-- Push new Studio scripts to disk (scripts whose path isn't on disk yet)
-	local allScripts = collectAllScripts()
+	local allScripts = collectAll()
 	local newScripts = {}
 	for _, entry in ipairs(allScripts) do
 		if not _diskPaths[entry.path] then
@@ -361,7 +392,7 @@ local function syncLoop()
 	setLastSync()
 end
 
--- ─── Poll timer ──────────────────────────────────────────────────────────────
+-- ─── Poll timer ───────────────────────────────────────────────────────────────────────────────
 
 local active = false
 
@@ -387,7 +418,7 @@ local function stopPolling()
 	setStatus("Not connected", "Run `azureslop sync` in your project folder", Color3.fromRGB(100,100,110))
 end
 
--- ─── Widget toggle + auto-start ──────────────────────────────────────────────
+-- ─── Widget toggle + auto-start ──────────────────────────────────────────────────────────────────
 
 toggleBtn.Click:Connect(function()
 	widget.Enabled = not widget.Enabled

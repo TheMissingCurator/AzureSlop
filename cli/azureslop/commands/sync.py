@@ -44,12 +44,21 @@ _project_root: str = ""
 
 
 _TYPE_TO_EXT = {
-    "Script": ".server.lua",
-    "LocalScript": ".client.lua",
-    "ModuleScript": ".module.lua",
+    "Script":           ".server.lua",
+    "LocalScript":      ".client.lua",
+    "ModuleScript":     ".module.lua",
+    "StringValue":      ".stringvalue",
+    "NumberValue":      ".numbervalue",
+    "IntValue":         ".intvalue",
+    "BoolValue":        ".boolvalue",
+    "RemoteEvent":      ".remoteevent",
+    "RemoteFunction":   ".remotefunction",
+    "BindableEvent":    ".bindableevent",
+    "BindableFunction": ".bindablefunction",
 }
+_EXT_TO_TYPE = {v: k for k, v in _TYPE_TO_EXT.items()}
 # Order matters: check longer/specific extensions before the legacy catch-all.
-_KNOWN_EXTS = (".server.lua", ".client.lua", ".module.lua", ".lua")
+_KNOWN_EXTS = tuple(sorted(_TYPE_TO_EXT.values(), key=len, reverse=True)) + (".lua",)
 
 
 def _script_path_to_file(rel_path: str, script_type: str = "") -> str:
@@ -69,7 +78,7 @@ def _script_path_to_file(rel_path: str, script_type: str = "") -> str:
 def _file_to_script_path(abs_path: str) -> str | None:
     """
     Convert an absolute file path back to a rel script path, stripping extensions.
-    Returns None if the file isn't under the project root or isn't a .lua file.
+    Returns None if the file isn't under the project root or isn't a watched file.
     """
     rel = os.path.relpath(abs_path, _project_root)
     if rel.startswith(".."):
@@ -81,10 +90,9 @@ def _file_to_script_path(abs_path: str) -> str | None:
 
 
 def _infer_type(abs_path: str) -> str:
-    if abs_path.endswith(".server.lua"):
-        return "Script"
-    if abs_path.endswith(".client.lua"):
-        return "LocalScript"
+    for ext, type_ in _EXT_TO_TYPE.items():
+        if abs_path.endswith(ext):
+            return type_
     return "ModuleScript"
 
 
