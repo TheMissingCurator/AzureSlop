@@ -25,6 +25,6 @@ def cmd_status():
 
     try:
         with urllib.request.urlopen(f"http://localhost:{port}/config", timeout=1):
-            print(f"Server  : \033[32mrunning\033[0m  (http://localhost:{port})")
+            print(f"Action  : \033[32mwaiting for Studio\033[0m  (http://localhost:{port})")
     except Exception:
-        print(f"Server  : \033[33mnot running\033[0m  (start with `azureslop sync`)")
+        print("Action  : \033[33mnone\033[0m  (run `azureslop sync` or `azureslop test`)")

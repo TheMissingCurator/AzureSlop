@@ -1,13 +1,18 @@
 # AzureSlop
 
-A Rojo alternative that infers your Roblox project structure from Studio's instance hierarchy — no JSON manifests required.
+AzureSlop moves Roblox Studio scripts between Studio and your filesystem with
+explicit, Git-like operations. It infers the project structure from Studio's
+instance hierarchy, so no Rojo project manifest is required.
 
-## How it works
+It is deliberately not a live sync bridge:
 
-- **Same name = same behavior.** Multiple parts named `Light1` in the same service all share one script on disk. Edit once, update everywhere.
-- **Service-scoped.** `ServerScriptService/Light1` and `ReplicatedStorage/Light1` are treated as completely separate things.
-- **Only scripts matter.** Instances with no scripts anywhere in their descendants are ignored entirely.
-- **Last write wins.** Edit in VS Code or Studio — whichever saved most recently wins on the next sync cycle (~5 seconds).
+- `azureslop sync` pulls one Studio snapshot to disk and exits.
+- `azureslop test` applies disk changes to existing Studio scripts through
+  `ScriptEditorService:UpdateSourceAsync`, which creates drafts when the place
+  has Drafts mode enabled.
+- `azureslop test --local` copies a configured `.rbxl` or `.rbxlx` baseline,
+  opens the disposable copy, and can create or delete instances as well as
+  update scripts.
 
 ## Setup
 
@@ -18,7 +23,7 @@ cd cli
 pip install -e .
 ```
 
-### 2. Init a project
+### 2. Initialize a project
 
 ```bash
 mkdir my-game
@@ -26,51 +31,96 @@ cd my-game
 azureslop init
 ```
 
-This drops a `.azureslop` config file. Edit it to choose which services to watch.
+### 3. Install the Studio plugin
 
-### 3. Start syncing
+Copy `plugin/AzureSlop.lua` into the Roblox Studio plugins folder, or install it
+as a local plugin from Studio. Enable **Allow HTTP Requests** in the place's
+Game Settings so the plugin can reach the CLI on localhost.
+
+## Workflow
+
+### Pull from Studio
+
+Open the source place in Studio, then run:
 
 ```bash
 azureslop sync
 ```
 
-Starts the local HTTP server on `localhost:25123`.
+Open the AzureSlop plugin panel and click **Pull into disk**. The CLI writes the
+snapshot and exits. AzureSlop records pulled instance paths in
+`.azureslop-state.json`; later pulls delete a missing file only if an earlier
+pull tracked it. Local-only files are preserved.
 
-### 4. Install the plugin
+### Test with Studio drafts
 
-Copy `plugin/AzureSlop.lua` into your Roblox Studio plugins folder:
+After editing on disk, run:
 
+```bash
+azureslop test
 ```
-~/.local/share/Roblox/Plugins/AzureSlop.lua
+
+In the source Studio window, click **Apply drafts**. Existing scripts are
+updated with Studio's draft-aware editor API. New scripts, deletions, values,
+and events are skipped because those changes cannot be isolated as script
+drafts. Review and commit or discard the resulting drafts in Studio.
+
+If Drafts mode is disabled, Studio's same API updates the editor source without
+the draft review layer. AzureSlop cannot enable Drafts mode for a place.
+
+### Test in a disposable local place
+
+First save or download a baseline place file and configure it:
+
+```bash
+azureslop config set place path/to/MyGame.rbxl
+azureslop test --local
 ```
 
-Activate it in Studio. On first connect it will dump all watched services to disk and build the folder structure automatically.
+You can also provide a one-off baseline:
 
-Open your editor of choice and start working. Changes in either Studio or your editor will propagate within ~5 seconds.
+```bash
+azureslop test --local path/to/MyGame.rbxlx
+```
+
+AzureSlop copies the baseline into `.azureslop-local/` and opens it. In that
+new Studio window, click **Apply to local copy**. Local mode applies source
+updates and also creates or removes tracked instances, making it suitable for
+testing changes that do not fit Studio's existing-script draft model.
+
+Roblox does not currently give third-party plugins a supported API to save and
+open the active cloud place as a new local file. For that reason, `--local`
+uses the configured baseline rather than silently cloning the active session.
 
 ## Project structure
 
-```
+```text
 my-game/
-  .azureslop                  ← project config
+  .azureslop
+  .azureslop-state.json
   ServerScriptService/
     GameManager.server.lua
     Light1/
       ControlScript.server.lua
   ReplicatedStorage/
     Shared/
-      Utils.lua
-  StarterGui/
-    MainMenu/
-      ButtonHandler.client.lua
+      Utils.module.lua
 ```
 
-## Config (.azureslop)
+The class-specific extensions are `.server.lua`, `.client.lua`, and
+`.module.lua`. Legacy `.lua` files are read as `ModuleScript` files. AzureSlop
+also maps supported value, remote, and bindable instances to dedicated file
+extensions.
+
+## Configuration
+
+`.azureslop` is JSON:
 
 ```json
 {
   "name": "MyGame",
   "port": 25123,
+  "place": "places/MyGame.rbxl",
   "services": [
     "ServerScriptService",
     "ReplicatedStorage",
@@ -82,11 +132,13 @@ my-game/
 }
 ```
 
-## Architecture
+The `place` entry is optional unless you use `azureslop test --local` without
+passing a place path on the command line.
 
-- **CLI** — Python HTTP server + filesystem watcher. Two endpoints: `GET /changes` and `POST /update`.
-- **Plugin** — Lua plugin that polls the CLI every 5 seconds. On first connect, pushes all scripts to disk.
+## Safety notes
 
-## Contributing
-
-This is early-stage. The core sync loop, conflict handling, and edge cases around deeply nested hierarchies are all areas that need work.
+- Every command is one-shot and requires a click in the intended Studio window.
+- The CLI binds only to `localhost` and uses a per-command session token.
+- Draft mode never creates or deletes instances in a shared place.
+- `.azureslop-local/` contains disposable place copies and is safe to add to
+  your project's `.gitignore`.

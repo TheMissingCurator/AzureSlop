@@ -40,4 +40,4 @@ def cmd_init(name: str | None = None):
     print(f"  Config  : {config_path}")
     print(f"  Services: {', '.join(config['services'])}")
     print()
-    print("Run `azureslop sync` to start syncing.")
+    print("Run `azureslop sync` to pull your open Studio place.")

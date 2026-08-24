@@ -2,15 +2,13 @@ from setuptools import setup, find_packages
 
 setup(
     name="azureslop",
-    version="0.2.0",
+    version="0.3.0",
     packages=find_packages(),
-    install_requires=[
-        "watchdog>=3.0.0",
-    ],
+    install_requires=[],
     entry_points={
         "console_scripts": [
             "azureslop=azureslop.main:main",
         ],
     },
-    python_requires=">=3.9",
+    python_requires=">=3.10",
 )

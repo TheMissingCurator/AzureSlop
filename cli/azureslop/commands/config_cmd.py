@@ -36,9 +36,9 @@ def _set_value(config_path: str, key: str, raw_value: str):
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
 
-    if key not in config and key not in _INT_KEYS | _LIST_KEYS | {"name"}:
+    if key not in config and key not in _INT_KEYS | _LIST_KEYS | {"name", "place"}:
         print(f"Unknown key: {key!r}")
-        print("Valid keys: name, port, services")
+        print("Valid keys: name, port, services, place")
         sys.exit(1)
 
     if key in _INT_KEYS:

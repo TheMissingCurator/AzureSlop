@@ -1,408 +1,478 @@
--- AzureSlop Plugin v0.4
--- Disk (VS Code) wins for existing scripts. Studio can create new scripts.
+-- AzureSlop Plugin v0.5
+-- One-shot Studio pull and draft/local test actions.
 
 local HttpService = game:GetService("HttpService")
+local ScriptEditorService = game:GetService("ScriptEditorService")
 
-local POLL_INTERVAL = 5  -- seconds
-
--- ─── State ───────────────────────────────────────────────────────────────────────────────
-
-local serverUrl = nil
-local lastSyncTime = 0
-local connected = false
+local POLL_INTERVAL = 2
 local services = {}
+local pendingConfig = nil
+local completedSession = nil
+local active = false
 
--- Paths we know exist on disk. Seeded on first connect, kept in sync as disk
--- changes arrive. Any Studio instance NOT in this set is new and gets pushed.
-local _diskPaths = {}
-
--- Non-script instance types we track alongside scripts
 local VALUE_TYPES = {
-	StringValue = true, NumberValue = true, IntValue = true, BoolValue = true,
+	StringValue = true,
+	NumberValue = true,
+	IntValue = true,
+	BoolValue = true,
 }
 local EVENT_TYPES = {
-	RemoteEvent = true, RemoteFunction = true,
-	BindableEvent = true, BindableFunction = true,
+	RemoteEvent = true,
+	RemoteFunction = true,
+	BindableEvent = true,
+	BindableFunction = true,
 }
 
--- ─── Toolbar / Widget ─────────────────────────────────────────────────────────────────────
+-- ─── Toolbar / widget ───────────────────────────────────────────────────────
 
 local toolbar = plugin:CreateToolbar("AzureSlop")
-local toggleBtn = toolbar:CreateButton("AzureSlop", "Toggle AzureSlop panel", "rbxassetid://4458901886")
+local toggleBtn = toolbar:CreateButton(
+	"AzureSlop",
+	"Toggle AzureSlop panel",
+	"rbxassetid://4458901886"
+)
 
-local widgetInfo = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, false, 220, 120, 220, 120)
+local widgetInfo = DockWidgetPluginGuiInfo.new(
+	Enum.InitialDockState.Float,
+	false,
+	false,
+	300,
+	180,
+	260,
+	160
+)
 local widget = plugin:CreateDockWidgetPluginGui("AzureSlopWidget", widgetInfo)
 widget.Title = "AzureSlop"
 
 local root = Instance.new("Frame")
-root.Size = UDim2.new(1,0,1,0)
-root.BackgroundColor3 = Color3.fromRGB(28,28,32)
+root.Size = UDim2.fromScale(1, 1)
+root.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
 root.BorderSizePixel = 0
 root.Parent = widget
 
 local statusDot = Instance.new("Frame")
-statusDot.Size = UDim2.new(0,10,0,10)
-statusDot.Position = UDim2.new(0,12,0,14)
-statusDot.BackgroundColor3 = Color3.fromRGB(100,100,110)
+statusDot.Size = UDim2.fromOffset(10, 10)
+statusDot.Position = UDim2.fromOffset(12, 14)
+statusDot.BackgroundColor3 = Color3.fromRGB(100, 100, 110)
 statusDot.BorderSizePixel = 0
 statusDot.Parent = root
 local dotCorner = Instance.new("UICorner")
-dotCorner.CornerRadius = UDim.new(1,0)
+dotCorner.CornerRadius = UDim.new(1, 0)
 dotCorner.Parent = statusDot
 
 local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1,-32,0,20)
-statusLabel.Position = UDim2.new(0,28,0,10)
+statusLabel.Size = UDim2.new(1, -40, 0, 20)
+statusLabel.Position = UDim2.fromOffset(28, 10)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Text = "Not connected"
-statusLabel.TextColor3 = Color3.fromRGB(160,160,170)
+statusLabel.TextColor3 = Color3.fromRGB(190, 190, 200)
 statusLabel.Font = Enum.Font.GothamBold
 statusLabel.TextSize = 12
 statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.Parent = root
 
 local subLabel = Instance.new("TextLabel")
-subLabel.Size = UDim2.new(1,-20,0,16)
-subLabel.Position = UDim2.new(0,12,0,34)
+subLabel.Size = UDim2.new(1, -24, 0, 38)
+subLabel.Position = UDim2.fromOffset(12, 34)
 subLabel.BackgroundTransparency = 1
-subLabel.Text = "Run `azureslop sync` in your project folder"
-subLabel.TextColor3 = Color3.fromRGB(100,100,110)
+subLabel.Text = "Run azureslop sync or azureslop test"
+subLabel.TextColor3 = Color3.fromRGB(120, 120, 130)
 subLabel.Font = Enum.Font.Gotham
 subLabel.TextSize = 10
 subLabel.TextWrapped = true
 subLabel.TextXAlignment = Enum.TextXAlignment.Left
+subLabel.TextYAlignment = Enum.TextYAlignment.Top
 subLabel.Parent = root
 
-local lastSyncLabel = Instance.new("TextLabel")
-lastSyncLabel.Size = UDim2.new(1,-20,0,14)
-lastSyncLabel.Position = UDim2.new(0,12,0,88)
-lastSyncLabel.BackgroundTransparency = 1
-lastSyncLabel.Text = ""
-lastSyncLabel.TextColor3 = Color3.fromRGB(80,80,90)
-lastSyncLabel.Font = Enum.Font.Gotham
-lastSyncLabel.TextSize = 10
-lastSyncLabel.TextXAlignment = Enum.TextXAlignment.Left
-lastSyncLabel.Parent = root
+local portLabel = Instance.new("TextLabel")
+portLabel.Size = UDim2.fromOffset(34, 24)
+portLabel.Position = UDim2.fromOffset(12, 76)
+portLabel.BackgroundTransparency = 1
+portLabel.Text = "Port:"
+portLabel.TextColor3 = Color3.fromRGB(120, 120, 130)
+portLabel.Font = Enum.Font.Gotham
+portLabel.TextSize = 11
+portLabel.TextXAlignment = Enum.TextXAlignment.Left
+portLabel.Parent = root
 
-local portInput
-do
-	local lbl = Instance.new("TextLabel")
-	lbl.Size = UDim2.new(0,32,0,24)
-	lbl.Position = UDim2.new(0,12,0,60)
-	lbl.BackgroundTransparency = 1
-	lbl.Text = "Port:"
-	lbl.TextColor3 = Color3.fromRGB(120,120,130)
-	lbl.Font = Enum.Font.Gotham
-	lbl.TextSize = 11
-	lbl.TextXAlignment = Enum.TextXAlignment.Left
-	lbl.Parent = root
+local portInput = Instance.new("TextBox")
+portInput.Size = UDim2.fromOffset(72, 22)
+portInput.Position = UDim2.fromOffset(48, 77)
+portInput.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
+portInput.BorderSizePixel = 0
+portInput.Text = "25123"
+portInput.TextColor3 = Color3.fromRGB(210, 210, 220)
+portInput.Font = Enum.Font.Gotham
+portInput.TextSize = 11
+portInput.ClearTextOnFocus = false
+portInput.Parent = root
+local portCorner = Instance.new("UICorner")
+portCorner.CornerRadius = UDim.new(0, 4)
+portCorner.Parent = portInput
 
-	portInput = Instance.new("TextBox")
-	portInput.Size = UDim2.new(0,70,0,22)
-	portInput.Position = UDim2.new(0,46,0,61)
-	portInput.BackgroundColor3 = Color3.fromRGB(45,45,52)
-	portInput.BorderSizePixel = 0
-	portInput.Text = "25123"
-	portInput.TextColor3 = Color3.fromRGB(200,200,210)
-	portInput.Font = Enum.Font.Gotham
-	portInput.TextSize = 11
-	portInput.ClearTextOnFocus = false
-	portInput.Parent = root
-	local pc = Instance.new("UICorner")
-	pc.CornerRadius = UDim.new(0,4)
-	pc.Parent = portInput
-end
+local actionButton = Instance.new("TextButton")
+actionButton.Size = UDim2.new(1, -24, 0, 32)
+actionButton.Position = UDim2.new(0, 12, 1, -44)
+actionButton.BackgroundColor3 = Color3.fromRGB(35, 120, 210)
+actionButton.BorderSizePixel = 0
+actionButton.Text = "Waiting for command..."
+actionButton.TextColor3 = Color3.fromRGB(245, 245, 250)
+actionButton.Font = Enum.Font.GothamBold
+actionButton.TextSize = 12
+actionButton.AutoButtonColor = true
+actionButton.Active = false
+actionButton.Parent = root
+local actionCorner = Instance.new("UICorner")
+actionCorner.CornerRadius = UDim.new(0, 5)
+actionCorner.Parent = actionButton
 
 local function setStatus(text, sub, color)
 	statusLabel.Text = text
 	subLabel.Text = sub or ""
-	statusDot.BackgroundColor3 = color or Color3.fromRGB(100,100,110)
+	statusDot.BackgroundColor3 = color or Color3.fromRGB(100, 100, 110)
 end
 
-local function setLastSync()
-	lastSyncLabel.Text = "Last sync: " .. os.date("%H:%M:%S")
+local function setButton(text, enabled)
+	actionButton.Text = text
+	actionButton.Active = enabled
+	actionButton.BackgroundColor3 = if enabled
+		then Color3.fromRGB(35, 120, 210)
+		else Color3.fromRGB(60, 60, 68)
 end
 
--- ─── Build path from instance up to service ──────────────────────────────────────────────
+-- ─── Instance mapping ───────────────────────────────────────────────────────
 
-local function getScriptPath(instance)
+local function getInstancePath(instance)
 	local parts = { instance.Name }
 	local current = instance.Parent
-	while current and not current:IsA("ServiceProvider") do
+	while current do
 		local isService = false
-		for _, svcName in ipairs(services) do
-			if current.Name == svcName and current.Parent == game then
+		for _, serviceName in ipairs(services) do
+			if current.Name == serviceName and current.Parent == game then
 				isService = true
 				break
 			end
 		end
-		if isService then break end
+		if isService then
+			table.insert(parts, 1, current.Name)
+			break
+		end
+		if current == game then
+			break
+		end
 		table.insert(parts, 1, current.Name)
 		current = current.Parent
-	end
-	if current then
-		table.insert(parts, 1, current.Name)
 	end
 	return table.concat(parts, "/")
 end
 
--- ─── Collect all tracked instances from watched services ─────────────────────────────
+local function isTracked(instance)
+	return instance:IsA("LuaSourceContainer")
+		or VALUE_TYPES[instance.ClassName]
+		or EVENT_TYPES[instance.ClassName]
+end
 
 local function collectAll()
 	local results = {}
-	local conflicts = {}
-
-	local function track(path, source, className)
-		if results[path] and results[path].source ~= source then
-			conflicts[path] = true
-		end
-		results[path] = { path = path, source = source, type = className, timestamp = os.time() }
-	end
-
-	for _, svcName in ipairs(services) do
-		local ok, svc = pcall(function() return game:GetService(svcName) end)
-		if ok and svc then
-			local function recurse(inst)
-				if inst:IsA("LuaSourceContainer") then
-					local ok2, src = pcall(function() return inst.Source end)
-					if ok2 then track(getScriptPath(inst), src, inst.ClassName) end
-				elseif VALUE_TYPES[inst.ClassName] then
-					local ok2, val = pcall(function() return tostring(inst.Value) end)
-					if ok2 then track(getScriptPath(inst), val, inst.ClassName) end
-				elseif EVENT_TYPES[inst.ClassName] then
-					track(getScriptPath(inst), "", inst.ClassName)
+	for _, serviceName in ipairs(services) do
+		local ok, service = pcall(function()
+			return game:GetService(serviceName)
+		end)
+		if ok and service then
+			local function recurse(instance)
+				if isTracked(instance) then
+					local source = ""
+					local sourceOk = true
+					if instance:IsA("LuaSourceContainer") then
+						sourceOk, source = pcall(function()
+							return ScriptEditorService:GetEditorSource(instance)
+						end)
+					elseif VALUE_TYPES[instance.ClassName] then
+						sourceOk, source = pcall(function()
+							return tostring(instance.Value)
+						end)
+					end
+					if sourceOk then
+						local path = getInstancePath(instance)
+						if results[path] and results[path].source ~= source then
+							warn("[AzureSlop] Multiple instances at " .. path .. " have different values; the last one will be pulled")
+						end
+						results[path] = {
+							path = path,
+							source = source,
+							type = instance.ClassName,
+						}
+					end
 				end
-				for _, child in ipairs(inst:GetChildren()) do
+				for _, child in ipairs(instance:GetChildren()) do
 					recurse(child)
 				end
 			end
-			recurse(svc)
+			recurse(service)
 		end
 	end
 
-	for path in pairs(conflicts) do
-		warn(string.format(
-			"[AzureSlop] Dedup conflict: multiple instances at '%s' have different values — last-write wins on disk",
-			path
-		))
+	local snapshot = {}
+	for _, entry in pairs(results) do
+		table.insert(snapshot, entry)
 	end
-
-	local arr = {}
-	for _, v in pairs(results) do table.insert(arr, v) end
-	return arr
+	return snapshot
 end
 
--- ─── Apply incoming changes from disk to Studio ──────────────────────────────────────────────
-
--- Disk wins for existing scripts. Each change also updates _diskPaths so the
--- push phase below knows not to treat these as new Studio-created scripts.
-
-local function applyChanges(changes, deletions)
-	-- Build a lookup: path -> all matching script instances
-	local scriptMap = {}
-	for _, svcName in ipairs(services) do
-		local ok, svc = pcall(function() return game:GetService(svcName) end)
-		if ok and svc then
-			local function recurse(inst)
-				if inst:IsA("LuaSourceContainer")
-					or VALUE_TYPES[inst.ClassName]
-					or EVENT_TYPES[inst.ClassName] then
-					local path = getScriptPath(inst)
-					if not scriptMap[path] then scriptMap[path] = {} end
-					table.insert(scriptMap[path], inst)
+local function buildInstanceMap()
+	local instanceMap = {}
+	for _, serviceName in ipairs(services) do
+		local ok, service = pcall(function()
+			return game:GetService(serviceName)
+		end)
+		if ok and service then
+			local function recurse(instance)
+				if isTracked(instance) then
+					local path = getInstancePath(instance)
+					instanceMap[path] = instanceMap[path] or {}
+					table.insert(instanceMap[path], instance)
 				end
-				for _, child in ipairs(inst:GetChildren()) do
+				for _, child in ipairs(instance:GetChildren()) do
 					recurse(child)
 				end
 			end
-			recurse(svc)
+			recurse(service)
 		end
 	end
+	return instanceMap
+end
 
-	-- Handle deletions from disk
-	for _, path in ipairs(deletions) do
-		_diskPaths[path] = nil
-		local instances = scriptMap[path]
-		if instances then
-			for _, inst in ipairs(instances) do
-				pcall(function() inst:Destroy() end)
-			end
-			print(string.format("[AzureSlop] Disk → Studio: deleted %s", path))
-		end
+local function createInstance(change)
+	local parts = string.split(change.path, "/")
+	if #parts < 2 then
+		return nil, "invalid path " .. change.path
 	end
 
-	if #changes == 0 then return end
+	local ok, service = pcall(function()
+		return game:GetService(parts[1])
+	end)
+	if not ok or not service then
+		return nil, "service unavailable for " .. change.path
+	end
 
-	local updated = 0
-	local created = 0
+	local parent = service
+	for index = 2, #parts - 1 do
+		local child = parent:FindFirstChild(parts[index])
+		if not child then
+			child = Instance.new("Folder")
+			child.Name = parts[index]
+			child.Parent = parent
+		end
+		parent = child
+	end
+
+	local createdOk, instance = pcall(function()
+		local newInstance = Instance.new(change.type or "ModuleScript")
+		newInstance.Name = parts[#parts]
+		-- Parent before UpdateSourceAsync so Drafts mode can create its draft.
+		newInstance.Parent = parent
+		return newInstance
+	end)
+	if not createdOk then
+		return nil, "could not create " .. change.path .. ": " .. tostring(instance)
+	end
+	return instance, nil
+end
+
+local function applyValue(instance, source)
+	if instance.ClassName == "StringValue" then
+		instance.Value = source
+	elseif instance.ClassName == "NumberValue" then
+		instance.Value = tonumber(source) or 0
+	elseif instance.ClassName == "IntValue" then
+		instance.Value = math.floor(tonumber(source) or 0)
+	elseif instance.ClassName == "BoolValue" then
+		instance.Value = source == "true"
+	end
+end
+
+local function applyTest(changes, deletions, localMode)
+	local instanceMap = buildInstanceMap()
+	local stats = { updated = 0, created = 0, deleted = 0, unchanged = 0, skipped = 0, errors = {} }
 
 	for _, change in ipairs(changes) do
-		local path = change.path
-		local source = change.source
-		local instances = scriptMap[path]
-
-		_diskPaths[path] = true
-
-		if instances and #instances > 0 then
-			-- Update every instance that shares this path (e.g. all Door/DoorScript)
-			for _, inst in ipairs(instances) do
-				if inst:IsA("LuaSourceContainer") then
-					pcall(function() inst.Source = source end)
-				elseif inst.ClassName == "StringValue" then
-					pcall(function() inst.Value = source end)
-				elseif inst.ClassName == "NumberValue" then
-					pcall(function() inst.Value = tonumber(source) or 0 end)
-				elseif inst.ClassName == "IntValue" then
-					pcall(function() inst.Value = math.floor(tonumber(source) or 0) end)
-				elseif inst.ClassName == "BoolValue" then
-					pcall(function() inst.Value = source == "true" end)
+		local instances = instanceMap[change.path]
+		if not instances or #instances == 0 then
+			if localMode then
+				local instance, createError = createInstance(change)
+				if instance then
+					instances = { instance }
+					instanceMap[change.path] = instances
+					stats.created += 1
+				else
+					table.insert(stats.errors, createError)
+					stats.skipped += 1
 				end
-				-- EVENT_TYPES: no value to update, existence is enough
+			else
+				stats.skipped += 1
+				table.insert(stats.errors, "no existing script for " .. change.path)
 			end
-			updated = updated + #instances
-		else
-			-- New file on disk — create the corresponding instance
-			local parts = {}
-			for part in path:gmatch("[^/]+") do
-				table.insert(parts, part)
-			end
-			if #parts >= 2 then
-				local svcName = parts[1]
-				local ok, svc = pcall(function() return game:GetService(svcName) end)
-				if ok and svc then
-					local parent = svc
-					for i = 2, #parts - 1 do
-						local folderName = parts[i]
-						local existing = parent:FindFirstChild(folderName)
-						if not existing then
-							local folder = Instance.new("Folder")
-							folder.Name = folderName
-							folder.Parent = parent
-							existing = folder
+		end
+
+		if instances then
+			for _, instance in ipairs(instances) do
+				if instance:IsA("LuaSourceContainer") then
+					local readOk, editorSource = pcall(function()
+						return ScriptEditorService:GetEditorSource(instance)
+					end)
+					if readOk and editorSource == (change.source or "") then
+						stats.unchanged += 1
+					else
+						local updateOk, updateError = pcall(function()
+							ScriptEditorService:UpdateSourceAsync(instance, function()
+								return change.source or ""
+							end)
+						end)
+						if updateOk then
+							stats.updated += 1
+						else
+							stats.skipped += 1
+							table.insert(stats.errors, change.path .. ": " .. tostring(updateError))
 						end
-						parent = existing
 					end
-					local instType = change.type or "ModuleScript"
-					local instName = parts[#parts]
-					local newInst = Instance.new(instType)
-					newInst.Name = instName
-					if newInst:IsA("LuaSourceContainer") then
-						newInst.Source = source
-					elseif instType == "StringValue" then
-						newInst.Value = source
-					elseif instType == "NumberValue" then
-						newInst.Value = tonumber(source) or 0
-					elseif instType == "IntValue" then
-						newInst.Value = math.floor(tonumber(source) or 0)
-					elseif instType == "BoolValue" then
-						newInst.Value = source == "true"
+				elseif localMode then
+					local valueOk, valueError = pcall(function()
+						applyValue(instance, change.source or "")
+					end)
+					if valueOk then
+						stats.updated += 1
+					else
+						stats.skipped += 1
+						table.insert(stats.errors, change.path .. ": " .. tostring(valueError))
 					end
-					newInst.Parent = parent
-					created = created + 1
+				else
+					-- Value and event changes are not drafts; do not mutate the shared place.
+					stats.skipped += 1
 				end
 			end
 		end
 	end
 
-	if updated > 0 then
-		print(string.format("[AzureSlop] Disk → Studio: %d instance(s) updated", updated))
+	for _, path in ipairs(deletions) do
+		local instances = instanceMap[path]
+		if localMode and instances then
+			for _, instance in ipairs(instances) do
+				local deleteOk, deleteError = pcall(function()
+					instance:Destroy()
+				end)
+				if deleteOk then
+					stats.deleted += 1
+				else
+					table.insert(stats.errors, path .. ": " .. tostring(deleteError))
+				end
+			end
+		elseif instances then
+			stats.skipped += #instances
+			table.insert(stats.errors, "deletion is not draftable: " .. path)
+		end
 	end
-	if created > 0 then
-		print(string.format("[AzureSlop] Disk → Studio: %d script(s) created", created))
-	end
+
+	return stats
 end
 
--- ─── Main sync loop ───────────────────────────────────────────────────────────────────────────────
+-- ─── One-shot actions ───────────────────────────────────────────────────────
 
-local firstConnect = true
+local function serverUrl()
+	return "http://localhost:" .. (tonumber(portInput.Text) or 25123)
+end
 
-local function syncLoop()
-	local port = tonumber(portInput.Text) or 25123
-	serverUrl = "http://localhost:" .. port
+local function postJson(path, data)
+	return HttpService:PostAsync(
+		serverUrl() .. path,
+		HttpService:JSONEncode(data),
+		Enum.HttpContentType.ApplicationJson,
+		false
+	)
+end
 
-	-- Try to fetch config
-	local ok, response = pcall(function()
-		return HttpService:GetAsync(serverUrl .. "/config", false)
-	end)
+local function runPendingAction()
+	local config = pendingConfig
+	if not config then
+		return
+	end
+	setButton("Working...", false)
+	setStatus("Working", "Keep this Studio window open", Color3.fromRGB(230, 170, 45))
 
-	if not ok then
-		connected = false
-		firstConnect = true
-		setStatus("Not connected", "Run `azureslop sync` in your project folder", Color3.fromRGB(180,60,60))
+	if config.action == "pull" then
+		local snapshot = collectAll()
+		postJson("/pull", {
+			session = config.session,
+			changes = snapshot,
+		})
+		completedSession = config.session
+		pendingConfig = nil
+		setStatus("Pull complete", string.format("Sent %d instance(s) to disk", #snapshot), Color3.fromRGB(30, 200, 100))
+		setButton("Complete", false)
 		return
 	end
 
+	if config.action == "test" then
+		local response = HttpService:GetAsync(serverUrl() .. "/changes", false)
+		local data = HttpService:JSONDecode(response)
+		local stats = applyTest(data.changes or {}, data.deletions or {}, config.local == true)
+		stats.session = config.session
+		postJson("/complete", stats)
+		completedSession = config.session
+		pendingConfig = nil
+		setStatus(
+			"Test ready",
+			string.format("%d updated, %d created, %d skipped", stats.updated, stats.created, stats.skipped),
+			Color3.fromRGB(30, 200, 100)
+		)
+		setButton("Complete", false)
+	end
+end
+
+actionButton.Activated:Connect(function()
+	if not pendingConfig then
+		return
+	end
+	local ok, actionError = pcall(runPendingAction)
+	if not ok then
+		warn("[AzureSlop] Action failed: " .. tostring(actionError))
+		setStatus("Action failed", tostring(actionError), Color3.fromRGB(190, 60, 60))
+		setButton("Retry", true)
+	end
+end)
+
+local function checkForAction()
+	local response = HttpService:GetAsync(serverUrl() .. "/config", false)
 	local config = HttpService:JSONDecode(response)
 	services = config.services or services
 
-	if not connected then
-		connected = true
-		setStatus("Connected", config.name or "AzureSlop project", Color3.fromRGB(30,200,100))
-		print("[AzureSlop] Connected to " .. (config.name or "project") .. " on port " .. port)
-	end
-
-	-- On first connect, push all Studio scripts to disk and record them in
-	-- _diskPaths so the per-tick push phase only catches genuinely new scripts.
-	if firstConnect then
-		firstConnect = false
-		print("[AzureSlop] First connect — pushing all scripts to disk...")
-		local allScripts = collectAll()
-		for _, entry in ipairs(allScripts) do
-			_diskPaths[entry.path] = true
-		end
-		if #allScripts > 0 then
-			local payload = HttpService:JSONEncode({ changes = allScripts })
-			pcall(function()
-				HttpService:PostAsync(serverUrl .. "/update", payload, Enum.HttpContentType.ApplicationJson, false)
-			end)
-			print(string.format("[AzureSlop] Pushed %d script(s) to disk", #allScripts))
-		end
-		lastSyncTime = os.time()
-		setLastSync()
+	if config.session == completedSession then
 		return
 	end
-
-	-- Pull disk changes → Studio (disk wins for existing scripts)
-	local ok2, resp2 = pcall(function()
-		return HttpService:GetAsync(serverUrl .. "/changes?since=" .. lastSyncTime, false)
-	end)
-	if ok2 then
-		local data = HttpService:JSONDecode(resp2)
-		applyChanges(data.changes or {}, data.deletions or {})
+	pendingConfig = config
+	if config.action == "pull" then
+		setStatus("Pull requested", config.name or "AzureSlop project", Color3.fromRGB(35, 140, 230))
+		setButton("Pull into disk", true)
+	elseif config.action == "test" and config.local then
+		setStatus("Local test requested", "Apply only in the disposable place window", Color3.fromRGB(35, 140, 230))
+		setButton("Apply to local copy", true)
+	elseif config.action == "test" then
+		setStatus("Draft test requested", "Existing scripts only; review drafts before committing", Color3.fromRGB(35, 140, 230))
+		setButton("Apply drafts", true)
 	end
-
-	-- Push new Studio scripts to disk (scripts whose path isn't on disk yet)
-	local allScripts = collectAll()
-	local newScripts = {}
-	for _, entry in ipairs(allScripts) do
-		if not _diskPaths[entry.path] then
-			table.insert(newScripts, entry)
-			_diskPaths[entry.path] = true
-		end
-	end
-	if #newScripts > 0 then
-		local payload = HttpService:JSONEncode({ changes = newScripts })
-		pcall(function()
-			HttpService:PostAsync(serverUrl .. "/update", payload, Enum.HttpContentType.ApplicationJson, false)
-		end)
-		print(string.format("[AzureSlop] Studio → disk: %d new script(s)", #newScripts))
-	end
-
-	lastSyncTime = os.time()
-	setLastSync()
 end
 
--- ─── Poll timer ───────────────────────────────────────────────────────────────────────────────
-
-local active = false
-
 local function startPolling()
+	if active then
+		return
+	end
 	active = true
 	task.spawn(function()
 		while active do
-			local ok, err = pcall(syncLoop)
-			if not ok then
-				warn("[AzureSlop] Sync error: " .. tostring(err))
+			local ok = pcall(checkForAction)
+			if not ok and not completedSession then
+				pendingConfig = nil
+				setStatus("Not connected", "Run azureslop sync or azureslop test", Color3.fromRGB(150, 70, 70))
+				setButton("Waiting for command...", false)
 			end
 			task.wait(POLL_INTERVAL)
 		end
@@ -411,20 +481,17 @@ end
 
 local function stopPolling()
 	active = false
-	connected = false
-	firstConnect = true
-	lastSyncTime = 0
-	_diskPaths = {}
-	setStatus("Not connected", "Run `azureslop sync` in your project folder", Color3.fromRGB(100,100,110))
+	pendingConfig = nil
+	completedSession = nil
+	setStatus("Not connected", "Open the panel to look for a command", Color3.fromRGB(100, 100, 110))
+	setButton("Waiting for command...", false)
 end
-
--- ─── Widget toggle + auto-start ──────────────────────────────────────────────────────────────────
 
 toggleBtn.Click:Connect(function()
 	widget.Enabled = not widget.Enabled
-	if widget.Enabled and not active then
+	if widget.Enabled then
 		startPolling()
-	elseif not widget.Enabled and active then
+	else
 		stopPolling()
 	end
 end)

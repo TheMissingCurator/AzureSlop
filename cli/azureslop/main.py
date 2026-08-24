@@ -5,13 +5,13 @@ AzureSlop CLI
 import argparse
 import sys
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 
 def main():
     parser = argparse.ArgumentParser(
         prog="azureslop",
-        description="Sync Roblox Studio scripts with your local filesystem.",
+        description="Pull Roblox Studio sources and test local changes on demand.",
     )
     parser.add_argument(
         "--version", "-V",
@@ -36,11 +36,10 @@ def main():
     # ── sync ─────────────────────────────────────────────────────────────────
     sync_p = subparsers.add_parser(
         "sync",
-        help="Start the sync server",
+        help="Pull the active Studio place into the current project",
         description=(
-            "Starts the local HTTP server that the Studio plugin polls. "
-            "VS Code edits win for existing scripts; new scripts created in "
-            "Studio are pushed to disk automatically."
+            "Waits for the Studio plugin, pulls one snapshot into the current "
+            "project, then exits."
         ),
     )
     sync_p.add_argument(
@@ -50,11 +49,38 @@ def main():
         help="Port to listen on (overrides the value in .azureslop)",
     )
 
+    # ── test ─────────────────────────────────────────────────────────────────
+    test_p = subparsers.add_parser(
+        "test",
+        help="Apply local sources to Studio for testing",
+        description=(
+            "Applies local sources to existing scripts through Studio's draft-aware "
+            "script editor API. With --local, copies and opens a configured place "
+            "file and allows instance creation and deletion in that disposable copy."
+        ),
+    )
+    test_p.add_argument(
+        "--local",
+        nargs="?",
+        const="",
+        metavar="PLACE",
+        help=(
+            "test in a disposable copy; optionally provide the .rbxl/.rbxlx baseline "
+            "instead of the configured 'place' value"
+        ),
+    )
+    test_p.add_argument(
+        "--port", "-p",
+        type=int,
+        metavar="PORT",
+        help="Port to listen on (overrides the value in .azureslop)",
+    )
+
     # ── status ───────────────────────────────────────────────────────────────
     subparsers.add_parser(
         "status",
-        help="Show project info and whether the sync server is running",
-        description="Prints the current project config and pings the sync server.",
+        help="Show project info and whether an action is waiting",
+        description="Prints the current project config and pings the action server.",
     )
 
     # ── config ───────────────────────────────────────────────────────────────
@@ -74,7 +100,7 @@ def main():
         "set",
         help="Set a configuration value",
         description=(
-            "Supported keys: name (string), port (integer), "
+            "Supported keys: name (string), port (integer), place (path), "
             "services (comma-separated list, e.g. ServerScriptService,ReplicatedStorage)"
         ),
     )
@@ -96,6 +122,14 @@ def main():
     elif args.command == "sync":
         from azureslop.commands.sync import cmd_sync
         cmd_sync(port_override=args.port)
+
+    elif args.command == "test":
+        from azureslop.commands.test import cmd_test
+        cmd_test(
+            local=args.local is not None,
+            place_override=args.local or None,
+            port_override=args.port,
+        )
 
     elif args.command == "status":
         from azureslop.commands.status import cmd_status
