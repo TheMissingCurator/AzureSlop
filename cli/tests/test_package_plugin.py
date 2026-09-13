@@ -11,7 +11,7 @@ spec.loader.exec_module(packager)
 
 class PackageTests(unittest.TestCase):
     def test_preview_modules_are_siblings_with_exact_source(self):
-        modules = {name: (ROOT / "plugin" / f"{name}.lua").read_text()
+        modules = {name: (ROOT / "plugin" / f"{name}.lua").read_text(encoding="utf-8")
                    for name in ("HarnessPreview", "HarnessVision", "HarnessMotion")}
         root = ET.fromstring(packager.package("-- main <&>", modules))
         main = root.find("Item")
