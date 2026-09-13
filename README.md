@@ -517,3 +517,16 @@ Windows, macOS, and Linux, plus the Lua doubles on Linux. It is configured
 coverage, not a claim that remote CI has already passed. These checks cannot
 verify Roblox's renderer or feature rollout. Studio validation is a separate
 manual step; see the [live checklist](docs/animation-preview.md#cleanup-and-live-validation).
+
+## License
+
+Copyright (c) 2026 Slop Enterprises.
+
+AzureSlop is licensed under the **GNU General Public License, version 3 only**
+(`GPL-3.0-only`). See [License.md](License.md) for the full terms.
+
+You may use, modify, redistribute, and sell original or modified copies.
+When distributing covered software, preserve the required notices, license it
+under GPLv3, and provide the corresponding source as required by the license.
+Using AzureSlop to develop a game does not, by itself, put that game under GPLv3.
+AzureSlop comes without warranty.

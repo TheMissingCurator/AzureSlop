@@ -10,6 +10,16 @@ spec.loader.exec_module(packager)
 
 
 class PackageTests(unittest.TestCase):
+    def test_license_is_in_plugin_package_and_cli(self):
+        license_text = (ROOT / "License.md").read_text(encoding="utf-8")
+        self.assertEqual((ROOT / "cli/LICENSE").read_text(encoding="utf-8"), license_text)
+        root = ET.fromstring(packager.package("-- main", {}, license_text))
+        notice = root.find("Item/Item[@class='StringValue']")
+        self.assertEqual(notice.find("Properties/string[@name='Name']").text, "License")
+        value = notice.find("Properties/string[@name='Value']").text
+        self.assertIn("SPDX-License-Identifier: GPL-3.0-only", value)
+        self.assertTrue(value.endswith(license_text))
+
     def test_preview_modules_are_siblings_with_exact_source(self):
         modules = {name: (ROOT / "plugin" / f"{name}.lua").read_text(encoding="utf-8")
                    for name in ("HarnessPreview", "HarnessVision", "HarnessMotion")}
