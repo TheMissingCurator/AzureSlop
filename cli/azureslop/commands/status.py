@@ -27,4 +27,4 @@ def cmd_status():
         with urllib.request.urlopen(f"http://localhost:{port}/config", timeout=1):
             print(f"Action  : \033[32mwaiting for Studio\033[0m  (http://localhost:{port})")
     except Exception:
-        print("Action  : \033[33mnone\033[0m  (run `azureslop sync` or `azureslop test`)")
+        print("Action  : \033[33mnone\033[0m  (run `azureslop pull`, `push`, or `test`)")

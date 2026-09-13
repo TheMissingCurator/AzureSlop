@@ -87,6 +87,15 @@ def cmd_test(
 
     if not result:
         return
+    if result.get("ok") is False:
+        print("Test blocked: Studio has changes that are not in the disk baseline.")
+        for conflict in result.get("conflicts", []):
+            print(
+                f"  {conflict.get('kind', 'source')}:{conflict.get('path', '?')}"
+                f" - {conflict.get('reason', 'version conflict')}"
+            )
+        print("Nothing was applied. Reconcile the two versions, then try again.")
+        sys.exit(1)
     print(
         "Test apply complete: "
         f"{result.get('updated', 0)} updated, "

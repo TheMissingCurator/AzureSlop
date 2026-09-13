@@ -5,13 +5,13 @@ AzureSlop CLI
 import argparse
 import sys
 
-VERSION = "0.3.0"
+VERSION = "0.7.0"
 
 
 def main():
     parser = argparse.ArgumentParser(
         prog="azureslop",
-        description="Pull Roblox Studio sources and test local changes on demand.",
+        description="Push and pull Roblox Studio sources and GUI definitions on demand.",
     )
     parser.add_argument(
         "--version", "-V",
@@ -20,6 +20,8 @@ def main():
     )
 
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
+    from azureslop.commands.harness import add_parser
+    add_parser(subparsers)
 
     # ── init ─────────────────────────────────────────────────────────────────
     init_p = subparsers.add_parser(
@@ -33,14 +35,42 @@ def main():
         help="Project name (skips the interactive prompt)",
     )
 
-    # ── sync ─────────────────────────────────────────────────────────────────
-    sync_p = subparsers.add_parser(
-        "sync",
+    # ── pull / sync ──────────────────────────────────────────────────────────
+    pull_p = subparsers.add_parser(
+        "pull",
         help="Pull the active Studio place into the current project",
         description=(
             "Waits for the Studio plugin, pulls one snapshot into the current "
             "project, then exits."
         ),
+    )
+    pull_p.add_argument(
+        "--port", "-p",
+        type=int,
+        metavar="PORT",
+        help="Port to listen on (overrides the value in .azureslop)",
+    )
+
+    sync_p = subparsers.add_parser(
+        "sync",
+        help="Deprecated alias for `azureslop pull`",
+        description="Backward-compatible alias for `azureslop pull`.",
+    )
+
+    # ── push ─────────────────────────────────────────────────────────────────
+    push_p = subparsers.add_parser(
+        "push",
+        help="Push added and changed files into the active Studio place",
+        description=(
+            "Applies files added or modified since the last pull/push to the "
+            "selected Studio window, plus tracked deletions, then exits."
+        ),
+    )
+    push_p.add_argument(
+        "--port", "-p",
+        type=int,
+        metavar="PORT",
+        help="Port to listen on (overrides the value in .azureslop)",
     )
     sync_p.add_argument(
         "--port", "-p",
@@ -68,6 +98,22 @@ def main():
             "test in a disposable copy; optionally provide the .rbxl/.rbxlx baseline "
             "instead of the configured 'place' value"
         ),
+    )
+
+    # ── resolve ──────────────────────────────────────────────────────────────────────────────
+    resolve_p = subparsers.add_parser(
+        "resolve",
+        help="Resolve a waiting pull/push conflict path by path",
+        description=(
+            "Connects to a running AzureSlop command and asks whether disk or "
+            "Studio should win for each conflicting path."
+        ),
+    )
+    resolve_p.add_argument(
+        "--port", "-p",
+        type=int,
+        metavar="PORT",
+        help="Port used by the waiting command (overrides the value in .azureslop)",
     )
     test_p.add_argument(
         "--port", "-p",
@@ -115,13 +161,22 @@ def main():
         parser.print_help()
         sys.exit(0)
 
-    if args.command == "init":
+    if args.command == "harness":
+        from azureslop.commands.harness import cmd_harness
+        cmd_harness(args)
+
+    elif args.command == "init":
         from azureslop.commands.init import cmd_init
         cmd_init(name=args.name)
 
-    elif args.command == "sync":
-        from azureslop.commands.sync import cmd_sync
-        cmd_sync(port_override=args.port)
+    elif args.command in {"pull", "sync"}:
+        from azureslop.commands.sync import cmd_pull, cmd_sync
+        command = cmd_pull if args.command == "pull" else cmd_sync
+        command(port_override=args.port)
+
+    elif args.command == "push":
+        from azureslop.commands.push import cmd_push
+        cmd_push(port_override=args.port)
 
     elif args.command == "test":
         from azureslop.commands.test import cmd_test
@@ -130,6 +185,10 @@ def main():
             place_override=args.local or None,
             port_override=args.port,
         )
+
+    elif args.command == "resolve":
+        from azureslop.commands.resolve import cmd_resolve
+        cmd_resolve(port_override=args.port)
 
     elif args.command == "status":
         from azureslop.commands.status import cmd_status

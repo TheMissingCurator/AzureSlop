@@ -1,13 +1,14 @@
-"""Implementation of the one-shot Studio-to-disk pull command."""
+"""Implementation of the one-shot disk-to-Studio push command."""
 
 import os
 import sys
 
 from azureslop.action_server import serve_action
 from azureslop.config import CONFIG_FILE, load_config
+from azureslop.project import record_disk_snapshot
 
 
-def cmd_pull(port_override: int | None = None):
+def cmd_push(port_override: int | None = None):
     project_root = os.getcwd()
     if not os.path.exists(os.path.join(project_root, CONFIG_FILE)):
         print("No AzureSlop project found in this directory.")
@@ -16,16 +17,17 @@ def cmd_pull(port_override: int | None = None):
 
     config = load_config(project_root)
     port = port_override if port_override is not None else config.get("port", 25123)
-    print("AzureSlop Pull")
+    print("AzureSlop Push")
     print(f"  Project : {config.get('name', 'Unknown')}")
     print(f"  Root    : {project_root}")
     print(f"  Port    : {port}")
     print()
-    print("Waiting for the Studio plugin. Click 'Pull into disk' in AzureSlop.")
+    print("Waiting for the Studio plugin. Click 'Push into Studio' in AzureSlop.")
+    print("Only added/modified files and tracked deletions will be sent.")
     print("Press Ctrl+C to cancel.\n")
 
     try:
-        result = serve_action(project_root, config, "pull", port_override=port_override)
+        result = serve_action(project_root, config, "push", port_override=port_override)
     except OSError as error:
         print(f"Could not start the AzureSlop server: {error}")
         sys.exit(1)
@@ -33,22 +35,23 @@ def cmd_pull(port_override: int | None = None):
     if not result:
         return
     if result.get("ok") is False:
-        print("Pull blocked: disk and Studio both changed since the last successful sync.")
+        print("Push blocked: Studio has changes that are not in the disk baseline.")
         for conflict in result.get("conflicts", []):
             print(
                 f"  {conflict.get('kind', 'source')}:{conflict.get('path', '?')}"
                 f" - {conflict.get('reason', 'version conflict')}"
             )
-        print("No project files were changed. Reconcile or back up one side, then try again.")
+        print("Nothing was applied. Pull after backing up local edits, or reconcile the files manually.")
         sys.exit(1)
+    if result.get("skipped", 0) == 0 and not result.get("errors"):
+        record_disk_snapshot(project_root, config.get("services", []))
     print(
-        "Pull complete: "
+        "Push complete: "
         f"{result.get('updated', 0)} updated, "
+        f"{result.get('created', 0)} created, "
         f"{result.get('deleted', 0)} deleted, "
-        f"{result.get('preserved', 0)} local change(s) preserved."
+        f"{result.get('unchanged', 0)} unchanged, "
+        f"{result.get('skipped', 0)} skipped."
     )
-
-
-def cmd_sync(port_override: int | None = None):
-    print("Note: `azureslop sync` is now an alias for `azureslop pull`.\n")
-    cmd_pull(port_override=port_override)
+    for error in result.get("errors", []):
+        print(f"  warning: {error}")
