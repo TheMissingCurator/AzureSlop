@@ -1,23 +1,46 @@
 # AzureSlop
 
+> **Use Roblox Studio's built-in MCP server for AI agent control.** There is
+> no need to set up the AzureSlop harness for that workflow. Studio already
+> provides the connection; this harness duplicates it and adds extra setup.
+> Follow [Roblox's official MCP setup guide](https://create.roblox.com/docs/studio/mcp).
+
 AzureSlop is a Roblox Studio plugin and Python CLI for file-based development
-and local agent control. It has two workflows:
+with an existing local agent harness:
 
 - **Pull, push, and test:** move scripts, supported values/events, and GUI
   definitions between Studio and disk, with baseline tracking and conflict checks.
-- **Agent harness:** keep a local connection open for instance inspection,
-  source editing, Luau execution, logs, and R6 animation preview tools.
+- **Legacy agent harness (not recommended for new setups):** a local connection
+  for instance inspection, source editing, Luau execution, logs, and R6 animation
+  preview tools. The code and documentation remain available for existing users.
 
-No Rojo project manifest is required. The harness is model-agnostic: an agent
-such as GPT-6/Codex can call the CLI, but AzureSlop does not run a model or require
-an OpenAI API key. See the [harness guide](docs/harness.md).
+No Rojo project manifest is required for the file workflow. The recommendation
+to use Studio MCP concerns agent control, not AzureSlop's separate file
+pull/push/test workflow.
+
+## Agent control: use Studio MCP
+
+Roblox's built-in MCP server already supports instance inspection, script
+editing, Luau execution, output logs, playtesting, and viewport screenshots.
+For general AI-assisted Studio work, use it instead of running AzureSlop's
+Python harness server and enabling a second bridge plugin.
+
+In Studio, open **Assistant → … → Manage MCP Servers**, turn on **Enable Studio
+as MCP server**, and follow the
+[official connection instructions](https://create.roblox.com/docs/studio/mcp)
+for your client. AzureSlop is not required for this connection.
+
+The harness instructions below and the [harness guide](docs/harness.md) are
+retained as a reference for existing installations. This recommendation does
+not claim that Studio MCP exposes identical versions of AzureSlop's specialized
+R6 preview and keyframe-editing commands.
 
 ## Current feature status
 
 | Feature | State |
 | --- | --- |
 | File pull/push, conflict resolution, GUI sidecars | Implemented; explicit operations, not continuous sync. |
-| Persistent local agent harness | Implemented; no manually configured pairing/bearer token. |
+| Persistent local agent harness | Legacy; not recommended for new setups. Use Studio's built-in MCP server for agent control. |
 | R6 animation preview and scrubbing | Implemented in Edit mode on a duplicate rig. Basic forward/backward timestamp evaluation has been checked in Studio. |
 | Keyframe editing, preview undo/export, motion diagnostics | Implemented; R6/clip constraints and diagnostic limitations apply. Not every clip or Studio environment has been validated. |
 | Fixed preview cameras | Implemented; front, side, and angled views in Studio. |
@@ -39,6 +62,9 @@ capture as available. Unsupported failures prevent repeated permission requests
 for that plugin session. There is no desktop-capture fallback or fabricated image.
 The [animation and vision guide](docs/animation-preview.md) documents the commands
 and the remaining live-validation requirements.
+
+This limitation applies to AzureSlop's plugin capture path, not Studio MCP's
+separate `screen_capture` tool documented by Roblox.
 
 ## Platforms
 
@@ -153,12 +179,18 @@ Restart Studio after replacing the plugin. Grant Studio's localhost HTTP and
 script-editing permissions when prompted, and match the plugin's port to the
 CLI (default `25123`). No pairing token needs to be copied.
 
-### 4. Choose a workflow
+### 4. Use the file workflow
 
 For file transfer, run `azureslop pull` or `azureslop push` in the game project
 and confirm the operation in the intended Studio window.
 
-For persistent agent control:
+For agent control, use [Studio MCP](#agent-control-use-studio-mcp); you do not
+need to start the AzureSlop harness.
+
+### Legacy harness setup (existing users only)
+
+The following is retained for existing installations, not recommended as a new
+agent setup:
 
 ```sh
 azureslop harness serve
