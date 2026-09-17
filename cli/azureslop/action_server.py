@@ -2,20 +2,21 @@
 
 import json
 import secrets
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from azureslop.project import (
-    apply_studio_choices_to_disk,
     apply_studio_snapshot,
     build_disk_delta,
     compare_disk_to_studio,
     disk_deletions,
     entry_key,
     normalize_instance_path,
-    operation_version_map,
     snapshot_version_map,
     studio_snapshot_conflicts,
+    studio_changes_since_sync,
+    STATE_FILE,
 )
 
 
@@ -51,7 +52,10 @@ def _report_conflicts(action: str, conflicts: list[dict]) -> None:
             f"  {conflict.get('kind', 'source')}:{conflict.get('path', '?')}"
             f" - {conflict.get('reason', 'version conflict')}"
         )
-    print("Choose the operation-side override in Studio, or run `azureslop resolve`.")
+    if action == "pull":
+        print("Choose each conflicting version in the Studio plugin panel.")
+    else:
+        print("Run `azureslop sync` before applying local changes.")
 
 
 def _conflict_key(conflict: dict) -> str:
@@ -87,6 +91,7 @@ class ActionServer(HTTPServer):
         self.comparison_passed = False
         self.pending_conflict: dict | None = None
         self.resolutions: dict[str, str] = {}
+        self.verified = False
 
 
 class ActionHandler(BaseHTTPRequestHandler):
@@ -150,6 +155,9 @@ class ActionHandler(BaseHTTPRequestHandler):
             if parsed.path == "/pull/chunk" and server.action == "pull":
                 self._receive_pull_chunk(parsed.query)
                 return
+            if parsed.path == "/verify/chunk" and server.action in {"push", "test"} and not server.local:
+                self._receive_pull_chunk(parsed.query)
+                return
 
             data = self._read_json()
             if data.get("session") != server.session:
@@ -160,32 +168,21 @@ class ActionHandler(BaseHTTPRequestHandler):
                 self._complete_chunked_pull(data)
                 return
 
-            if parsed.path == "/resolve":
-                self._receive_resolution(data, force=False)
+            if parsed.path == "/verify/complete" and server.action in {"push", "test"} and not server.local:
+                self._complete_verification(data)
                 return
 
-            if parsed.path == "/force":
-                self._receive_resolution(data, force=True)
+            if parsed.path == "/resolve":
+                self._receive_resolution(data)
                 return
 
             if parsed.path == "/compare" and server.action in {"push", "test"}:
+                if not server.local and not server.verified:
+                    raise ValueError("Sync verification has not passed; run azureslop sync")
                 current = data.get("current", [])
                 if not isinstance(current, list):
                     raise ValueError("'current' must be an array")
                 services = server.project_config.get("services", [])
-                current_versions = operation_version_map(
-                    server.project_root, services, current
-                )
-                resolutions_valid = self._resolutions_match(current_versions)
-                if server.resolutions and resolutions_valid:
-                    apply_studio_choices_to_disk(
-                        server.project_root,
-                        services,
-                        current,
-                        server.resolutions,
-                    )
-                elif server.resolutions:
-                    server.resolutions = {}
                 conflicts = compare_disk_to_studio(
                     server.project_root,
                     services,
@@ -193,28 +190,14 @@ class ActionHandler(BaseHTTPRequestHandler):
                 )
                 conflicts.extend(_ambiguous_conflicts(data.get("ambiguous", []), services))
                 conflicts = _merge_conflicts(conflicts)
-                if resolutions_valid:
-                    conflicts = [
-                        conflict
-                        for conflict in conflicts
-                        if server.resolutions.get(_conflict_key(conflict)) != "disk"
-                    ]
                 if conflicts:
-                    server.result = {"ok": False, "conflicts": conflicts}
+                    server.result = {"ok": False, "syncRequired": True, "conflicts": conflicts}
                     server.comparison_passed = False
-                    server.pending_conflict = {
-                        "conflicts": conflicts,
-                        "versions": operation_version_map(
-                            server.project_root, services, current
-                        ),
-                    }
-                    server.resolutions = {}
+                    server.completed = True
                     _report_conflicts(server.action, conflicts)
                     self._send_json(server.result)
                 else:
                     server.comparison_passed = True
-                    server.pending_conflict = None
-                    server.resolutions = {}
                     self._send_json(
                         {
                             "ok": True,
@@ -241,6 +224,8 @@ class ActionHandler(BaseHTTPRequestHandler):
 
             if parsed.path == "/complete" and server.action in {"push", "test"}:
                 comparison_required = not (server.action == "test" and server.local)
+                if comparison_required and not server.verified:
+                    raise ValueError("Sync verification has not passed; run azureslop sync")
                 if comparison_required and not server.comparison_passed:
                     raise ValueError("Studio version comparison has not passed")
                 server.result = {key: value for key, value in data.items() if key != "session"}
@@ -256,24 +241,27 @@ class ActionHandler(BaseHTTPRequestHandler):
 
         self._send_json({"error": "Not found"}, status=404)
 
-    def _receive_resolution(self, data: dict, force: bool) -> None:
+    def _receive_resolution(self, data: dict) -> None:
         server = self.action_server
+        if server.action != "pull":
+            raise ValueError("Resolve conflicts during azureslop sync before pushing")
         pending = server.pending_conflict
         if pending is None:
             raise ValueError("There is no unresolved conflict")
+        if any(
+            "duplicate Studio instances" in conflict.get("reason", "")
+            for conflict in pending["conflicts"]
+        ):
+            raise ValueError("Fix differently-valued duplicate Studio instances before resolving")
         conflict_keys = {_conflict_key(conflict) for conflict in pending["conflicts"]}
-        if force:
-            operation_side = "studio" if server.action == "pull" else "disk"
-            decisions = {key: operation_side for key in conflict_keys}
-        else:
-            decisions = data.get("decisions")
-            if not isinstance(decisions, dict):
-                raise ValueError("'decisions' must be an object")
-            decisions = {str(key): str(value) for key, value in decisions.items()}
-            if set(decisions) != conflict_keys:
-                raise ValueError("A disk or Studio decision is required for every conflict")
-            if any(value not in {"disk", "studio"} for value in decisions.values()):
-                raise ValueError("Conflict decisions must be 'disk' or 'studio'")
+        decisions = data.get("decisions")
+        if not isinstance(decisions, dict):
+            raise ValueError("'decisions' must be an object")
+        decisions = {str(key): str(value) for key, value in decisions.items()}
+        if set(decisions) != conflict_keys:
+            raise ValueError("A disk or Studio decision is required for every conflict")
+        if any(value not in {"disk", "studio"} for value in decisions.values()):
+            raise ValueError("Conflict decisions must be 'disk' or 'studio'")
         server.resolutions = decisions
         self._send_json(
             {
@@ -321,21 +309,43 @@ class ActionHandler(BaseHTTPRequestHandler):
         print(f"[pull] Received batch {index}/{total}")
         self._send_json({"ok": True, "received": index, "total": total})
 
-    def _complete_chunked_pull(self, data: dict) -> None:
+    def _read_chunked_snapshot(self, total: object) -> dict:
         server = self.action_server
-        total = data.get("total")
         if not isinstance(total, int) or total < 1 or total > MAX_PULL_CHUNKS:
-            raise ValueError("Invalid pull batch total")
+            raise ValueError("Invalid snapshot batch total")
         if server.pull_total != total:
-            raise ValueError("Pull batch total does not match the upload")
+            raise ValueError("Snapshot batch total does not match the upload")
         missing = [index for index in range(1, total + 1) if index not in server.pull_chunks]
         if missing:
-            raise ValueError(f"Missing pull batches: {missing[:20]}")
-
+            raise ValueError(f"Missing snapshot batches: {missing[:20]}")
         payload = b"".join(server.pull_chunks[index] for index in range(1, total + 1))
         snapshot = json.loads(payload.decode("utf-8"))
         if not isinstance(snapshot, dict) or not isinstance(snapshot.get("changes"), list):
-            raise ValueError("Pull batches did not contain a valid snapshot")
+            raise ValueError("Batches did not contain a valid Studio snapshot")
+        server.pull_chunks.clear()
+        server.pull_total = None
+        return snapshot
+
+    def _complete_verification(self, data: dict) -> None:
+        server = self.action_server
+        snapshot = self._read_chunked_snapshot(data.get("total"))
+        services = server.project_config.get("services", [])
+        if not (Path(server.project_root) / STATE_FILE).is_file():
+            drift = [{"path": "(project)", "kind": "state", "reason": "Run azureslop sync first"}]
+        else:
+            drift = studio_changes_since_sync(server.project_root, services, snapshot["changes"])
+            drift.extend(_ambiguous_conflicts(snapshot.get("ambiguous", []), services))
+        if drift:
+            server.result = {"ok": False, "syncRequired": True, "conflicts": _merge_conflicts(drift)}
+            server.completed = True
+            self._send_json(server.result)
+            return
+        server.verified = True
+        self._send_json({"ok": True})
+
+    def _complete_chunked_pull(self, data: dict) -> None:
+        server = self.action_server
+        snapshot = self._read_chunked_snapshot(data.get("total"))
         services = server.project_config.get("services", [])
         versions = snapshot_version_map(
             server.project_root, services, snapshot["changes"]
@@ -367,8 +377,6 @@ class ActionHandler(BaseHTTPRequestHandler):
             }
             server.resolutions = {}
             _report_conflicts(server.action, conflicts)
-            server.pull_chunks.clear()
-            server.pull_total = None
             self._send_json(server.result)
             return
         server.result = apply_studio_snapshot(
@@ -385,8 +393,6 @@ class ActionHandler(BaseHTTPRequestHandler):
             }
             server.resolutions = {}
             _report_conflicts(server.action, server.result.get("conflicts", []))
-            server.pull_chunks.clear()
-            server.pull_total = None
         else:
             server.pending_conflict = None
             server.resolutions = {}

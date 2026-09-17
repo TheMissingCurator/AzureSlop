@@ -1,76 +1,75 @@
 # Install and update
 
-AzureSlop needs two local pieces: the Python CLI in your terminal and the
-`AzureSlop.rbxmx` package in Roblox Studio. Install them once, then each game
-only needs `azureslop init`.
+AzureSlop has a Python CLI and one Roblox Studio plugin. The ready-made
+[plugin package](../releases/AzureSlop.rbxmx) means users do not need to run
+the source packager.
 
-## Requirements
+## Install the CLI
 
-- Python 3.10 or newer.
-- Roblox Studio on Windows or macOS. Linux use requires an unofficial Wine or
-  Vinegar environment; the CLI itself is cross-platform.
-- A local clone of this repository.
-
-## Build the package
-
-From the repository root:
+Python 3.10+ and Git are required for the current direct GitHub install:
 
 ```powershell
 # Windows PowerShell
-py -m pip install -e ./cli
-py tools/package_plugin.py
+py -m pip install "git+https://github.com/TheMissingCurator/AzureSlop.git#subdirectory=cli"
 ```
 
 ```sh
 # macOS or Linux
-python3 -m pip install -e ./cli
+python3 -m pip install "git+https://github.com/TheMissingCurator/AzureSlop.git#subdirectory=cli"
+```
+
+From a cloned repository, use `py -m pip install -e ./cli` or
+`python3 -m pip install -e ./cli` instead. Ensure your Python scripts directory
+is on `PATH` so the `azureslop` command is available.
+
+## Install the plugin
+
+Download [releases/AzureSlop.rbxmx](../releases/AzureSlop.rbxmx) (on GitHub,
+use **Download raw**) and put it
+in Studio's local Plugins folder. Restart Studio. On Windows the folder is
+usually `%LOCALAPPDATA%\Roblox\Plugins`. On macOS use Studio's local Plugins
+folder. Linux users running Studio via Wine or Vinegar should use the Plugins
+folder inside that Studio prefix.
+
+In Studio, open the AzureSlop panel. Grant localhost HTTP and script-editing
+permissions when Studio asks. The default port is `25123`; keep the panel and
+project configuration at the same value.
+
+## Verify
+
+Open a place, then in a game folder run:
+
+```sh
+azureslop init
+azureslop sync
+```
+
+Click **Sync from Studio** in the docked AzureSlop panel. The command should
+finish and create files under the configured services. See the
+[README](../README.md#get-your-first-sync) for the edit and push loop.
+
+## Update or develop from source
+
+Users of the local plugin should download the latest ready-made package and
+replace the old file. If building from a clone, run:
+
+```sh
 python3 tools/package_plugin.py
 ```
 
-The result is `dist/AzureSlop.rbxmx`. Do not install only
-`plugin/AzureSlop.lua`; the packaged file includes its Lua modules.
-
-## Put it in Studio
-
-Copy `dist/AzureSlop.rbxmx` into the local Plugins folder used by your Studio
-installation and restart Studio. The packager can do the copy when given the
-full target path. It creates a timestamped backup before replacing an existing
-package.
-
-Windows example:
+The output is `dist/AzureSlop.rbxmx`. Install an exact target with a backup:
 
 ```powershell
 py tools/package_plugin.py --install "$env:LOCALAPPDATA/Roblox/Plugins/AzureSlop.rbxmx"
 ```
 
-On macOS, use Studio's local Plugins directory and `python3`. On Linux, use
-the Plugins directory inside the Wine/Vinegar Studio prefix—not a native Linux
-application directory. Quote paths that contain spaces.
+Restart Studio after replacing a local plugin. The release plugin has no
+harness ModuleScripts; those sources live in [legacy](../legacy/README.md).
 
-If the command cannot find its target, create or locate the correct Plugins
-directory first and pass the absolute package filename again.
+When preparing a repository release, also rebuild the tracked download with
+`python3 tools/package_plugin.py --output releases/AzureSlop.rbxmx`. The package
+test checks that this file matches the current plugin source.
 
-## First Studio prompt
-
-Open the AzureSlop panel after Studio restarts. When Studio requests access,
-allow the plugin's localhost HTTP and script-editing permissions. The default
-port is `25123`; leave the panel and project config at that value unless you
-have a concrete port conflict.
-
-## Updating
-
-Pull the repository update, rebuild with `tools/package_plugin.py`, replace
-the installed package, and restart Studio. Existing project folders and
-`.azureslop` settings stay intact.
-
-## Check the installation
-
-In a game folder, run:
-
-```sh
-azureslop init
-azureslop status
-```
-
-Then run `azureslop pull` and confirm it from the AzureSlop panel. See the
-[quickstart](../README.md#get-your-first-pull) for the normal flow.
+For a downloadable GitHub Release package, push a new `v*` tag. The
+[release workflow](../.github/workflows/release.yml) builds the plugin and
+attaches `AzureSlop.rbxmx` to that tag's GitHub Release.

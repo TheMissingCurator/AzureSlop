@@ -3,17 +3,17 @@
 The normal workflow is:
 
 ```text
-Studio place → azureslop pull → edit files → azureslop push → Studio place
+Studio place → azureslop sync → edit files → azureslop push → Studio place
 ```
 
 Each operation is one-shot and confirmed in Studio. AzureSlop is not a live
 sync process.
 
-## Pull
+## Sync from Studio
 
-`azureslop pull` reads one snapshot from the Studio window you confirm and
+`azureslop sync` reads one snapshot from the Studio window you confirm and
 writes it to disk. It records the result in `.azureslop-state.json`; later
-pulls delete a missing file only when AzureSlop previously tracked it.
+syncs delete a missing file only when AzureSlop previously tracked it.
 Local-only files are preserved.
 
 Large snapshots are uploaded in safe-sized batches and assembled before files
@@ -22,8 +22,11 @@ change, so an interrupted upload does not write a partial snapshot.
 ## Push
 
 `azureslop push` sends additions, modifications, and tracked deletions since
-the last successful pull or push. Unchanged files are not sent. It can create
-missing tracked instances, so confirm the intended Studio window carefully.
+the last successful sync or push. Unchanged files are not sent. Before sending,
+it checks the complete watched Studio snapshot against that baseline. If any
+watched path changed in Studio, including one unrelated to your local edit,
+push stops and asks you to sync first. It can create missing tracked instances,
+so confirm the intended Studio window carefully.
 
 Script source is written through Studio's `ScriptEditorService:UpdateSourceAsync`.
 With Drafts mode, those script edits can appear as drafts. Structural changes
@@ -35,6 +38,9 @@ are direct because Roblox does not expose structural drafts.
 draft-aware editor API. It does not create/delete instances or apply GUI/value
 changes. Use `azureslop test --local` for a disposable saved-place copy; see
 [Configuration](configuration.md#local-copy-testing).
+After applying or reviewing drafts in the shared place, run `azureslop sync`
+before the next push or regular test so the baseline includes Studio's current
+editor source.
 
 ## What becomes files
 
@@ -72,4 +78,5 @@ different source, AzureSlop blocks rather than silently choosing one. See
 
 Before any write, AzureSlop compares the prior snapshot, disk, and Studio.
 Changes on both sides stop the operation. Read [Resolve conflicts](conflicts.md)
-before using the panel's override buttons.
+to understand the per-file choices in the panel. `azureslop pull` remains an
+alias for `azureslop sync` for existing projects.

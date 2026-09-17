@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path, PurePosixPath
 
 
@@ -344,6 +345,25 @@ def record_disk_snapshot(project_root: str, services: list[str]) -> None:
     _save_state(project_root, entries)
 
 
+def studio_changes_since_sync(
+    project_root: str, services: list[str], studio_entries: list[dict]
+) -> list[dict]:
+    """List every Studio change since the last pull, including unrelated paths."""
+    state = _load_state(project_root, services)
+    studio = _snapshot_map(studio_entries, services)
+    conflicts = []
+    for key in sorted(set(state) | set(studio)):
+        studio_digest = _digest_entry(studio[key]) if key in studio else None
+        if state.get(key) != studio_digest or (key in state) != (key in studio):
+            kind, path = _split_entry_key(key)
+            conflicts.append({
+                "path": path,
+                "kind": kind,
+                "reason": "Studio changed since the last sync",
+            })
+    return conflicts
+
+
 def _plan_studio_snapshot(
     project_root: str,
     services: list[str],
@@ -481,6 +501,33 @@ def apply_studio_snapshot(
     disk = plan["disk"]
     writes = plan["writes"]
     deletes = plan["deletes"]
+    backups: list[tuple[dict, str]] = []
+    for key, decision in (resolutions or {}).items():
+        disk_entry = disk.get(key)
+        studio_entry = studio.get(key)
+        if decision == "studio" and disk_entry is not None:
+            if studio_entry is None or _digest_entry(disk_entry) != _digest_entry(studio_entry):
+                backups.append((disk_entry, "local"))
+        elif decision == "disk" and studio_entry is not None:
+            if disk_entry is None or _digest_entry(studio_entry) != _digest_entry(disk_entry):
+                backups.append((studio_entry, "studio"))
+
+    backup_directory = None
+    if backups:
+        backup_root = Path(project_root) / ".azureslop-conflicts"
+        if backup_root.is_symlink():
+            raise ValueError("Refusing a symlinked conflict backup directory")
+        backup_root.mkdir(exist_ok=True)
+        backup_directory = Path(tempfile.mkdtemp(prefix="sync-", dir=backup_root))
+        for entry, side in backups:
+            original = instance_path_to_file(
+                project_root, entry["path"], entry["type"], entry["kind"]
+            )
+            relative = original.relative_to(Path(project_root).resolve())
+            backup_path = backup_directory / f"{relative}.{side}"
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            backup_path.write_text(entry["source"], encoding="utf-8")
+
     deleted = 0
     for _, change in deletes:
         file_path = instance_path_to_file(
@@ -523,6 +570,7 @@ def apply_studio_snapshot(
         "updated": len(writes),
         "deleted": deleted,
         "preserved": preserved,
+        "backupDirectory": str(backup_directory) if backup_directory else None,
         "conflicts": [],
     }
 

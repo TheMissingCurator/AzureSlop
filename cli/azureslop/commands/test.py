@@ -88,13 +88,13 @@ def cmd_test(
     if not result:
         return
     if result.get("ok") is False:
-        print("Test blocked: Studio has changes that are not in the disk baseline.")
+        print("Test blocked: Studio changed since your last sync.")
         for conflict in result.get("conflicts", []):
             print(
                 f"  {conflict.get('kind', 'source')}:{conflict.get('path', '?')}"
                 f" - {conflict.get('reason', 'version conflict')}"
             )
-        print("Nothing was applied. Reconcile the two versions, then try again.")
+        print("Nothing was applied. Run `azureslop sync`, review any conflicts, then test again.")
         sys.exit(1)
     print(
         "Test apply complete: "

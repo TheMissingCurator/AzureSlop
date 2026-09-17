@@ -37,6 +37,22 @@ class ActionServerTests(unittest.TestCase):
         thread.start()
         return server, thread, f"http://localhost:{server.server_port}"
 
+    def _verify(self, url: str, session: str, changes: list[dict]) -> dict:
+        body = json.dumps({"changes": changes, "ambiguous": []}).encode("utf-8")
+        chunk = urllib.request.Request(
+            f"{url}/verify/chunk?session={urllib.parse.quote(session)}&index=1&total=1",
+            data=body,
+        )
+        with urllib.request.urlopen(chunk):
+            pass
+        complete = urllib.request.Request(
+            url + "/verify/complete",
+            data=json.dumps({"session": session, "total": 1}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(complete) as response:
+            return json.load(response)
+
     def test_pull_handshake_writes_files_and_completes(self):
         server, thread, url = self._start("pull")
         with urllib.request.urlopen(url + "/config") as response:
@@ -97,7 +113,7 @@ class ActionServerTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(server.completed)
         self.assertEqual(
-            (self.root / "ServerScriptService/Main.server.lua").read_text(),
+            (self.root / "ServerScriptService/Main.server.lua").read_text(encoding="utf-8"),
             "print('héllo')",
         )
 
@@ -165,7 +181,7 @@ class ActionServerTests(unittest.TestCase):
         self.assertTrue(server.completed)
         self.assertEqual(script.read_text(encoding="utf-8"), "studio")
 
-    def test_forced_batched_pull_resolves_all_conflict_types_together(self):
+    def test_batched_pull_rejects_ambiguous_duplicate_resolution(self):
         apply_studio_snapshot(
             str(self.root),
             self.config["services"],
@@ -240,28 +256,26 @@ class ActionServerTests(unittest.TestCase):
             (self.root / "ServerScriptService/Duplicate.module.lua").exists()
         )
 
-        force = urllib.request.Request(
-            url + "/force",
-            data=json.dumps({"session": config["session"]}).encode(),
+        resolve = urllib.request.Request(
+            url + "/resolve",
+            data=json.dumps({
+                "session": config["session"],
+                "decisions": {
+                    "source:ServerScriptService/Main": "studio",
+                    "source:ServerScriptService/Duplicate": "studio",
+                },
+            }).encode(),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(force) as response:
-            resolution = json.load(response)
-        self.assertEqual(len(resolution["decisions"]), 2)
-
-        completed = upload()
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            urllib.request.urlopen(resolve)
+        self.assertEqual(context.exception.code, 400)
+        context.exception.close()
+        self.assertFalse(server.completed)
+        server.completed = True
         thread.join(timeout=1)
         server.server_close()
-        self.assertTrue(completed["ok"])
-        self.assertTrue(server.completed)
-        self.assertEqual(main.read_text(encoding="utf-8"), "studio")
-        self.assertEqual(
-            (
-                self.root
-                / "ServerScriptService/Duplicate.module.lua"
-            ).read_text(encoding="utf-8"),
-            "chosen duplicate",
-        )
+        self.assertEqual(main.read_text(encoding="utf-8"), "disk")
 
     def test_test_handshake_serves_snapshot_and_requires_session(self):
         script = self.root / "ServerScriptService/Main.server.lua"
@@ -313,6 +327,10 @@ class ActionServerTests(unittest.TestCase):
         with urllib.request.urlopen(url + "/config") as response:
             config = json.load(response)
         self.assertEqual(config["action"], "push")
+        self.assertTrue(self._verify(url, config["session"], [
+            {"path": "ServerScriptService/Main", "source": "print('before')", "type": "Script"},
+            {"path": "ServerScriptService/Unchanged", "source": "print('same')", "type": "Script"},
+        ])["ok"])
         with urllib.request.urlopen(url + "/changes") as response:
             snapshot = json.load(response)
         self.assertEqual(
@@ -355,154 +373,90 @@ class ActionServerTests(unittest.TestCase):
         server.server_close()
         self.assertEqual(server.result, {"updated": 1, "created": 0})
 
-    def test_push_compare_blocks_when_studio_changed(self):
-        script = self.root / "ServerScriptService/Main.server.lua"
-        script.parent.mkdir()
-        script.write_text("base", encoding="utf-8")
+    def test_push_requires_sync_for_unrelated_studio_change(self):
+        main = self.root / "ServerScriptService/Main.server.lua"
+        main.parent.mkdir()
+        main.write_text("base", encoding="utf-8")
+        other = self.root / "ServerScriptService/Other.server.lua"
+        other.write_text("old", encoding="utf-8")
         record_disk_snapshot(str(self.root), self.config["services"])
-        script.write_text("disk", encoding="utf-8")
+        main.write_text("my local edit", encoding="utf-8")
         server, thread, url = self._start("push")
+        with urllib.request.urlopen(url + "/config") as response:
+            config = json.load(response)
 
+        result = self._verify(url, config["session"], [
+            {"path": "ServerScriptService/Main", "source": "base", "type": "Script"},
+            {"path": "ServerScriptService/Other", "source": "teammate edit", "type": "Script"},
+        ])
+        thread.join(timeout=1)
+        server.server_close()
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["syncRequired"])
+        self.assertTrue(server.completed)
+        self.assertEqual(result["conflicts"][0]["path"], "ServerScriptService/Other")
+        self.assertEqual(main.read_text(encoding="utf-8"), "my local edit")
+
+    def test_push_without_a_sync_baseline_is_blocked(self):
+        server, thread, url = self._start("push")
+        with urllib.request.urlopen(url + "/config") as response:
+            config = json.load(response)
+        result = self._verify(url, config["session"], [])
+        thread.join(timeout=1)
+        server.server_close()
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["syncRequired"])
+
+    def test_push_stops_if_studio_changes_after_verification(self):
+        main = self.root / "ServerScriptService/Main.server.lua"
+        main.parent.mkdir()
+        main.write_text("base", encoding="utf-8")
+        record_disk_snapshot(str(self.root), self.config["services"])
+        main.write_text("local edit", encoding="utf-8")
+        server, thread, url = self._start("push")
+        with urllib.request.urlopen(url + "/config") as response:
+            config = json.load(response)
+        self.assertTrue(self._verify(url, config["session"], [
+            {"path": "ServerScriptService/Main", "source": "base", "type": "Script"},
+        ])["ok"])
+        compare = urllib.request.Request(
+            url + "/compare",
+            data=json.dumps({
+                "session": config["session"],
+                "current": [
+                    {"path": "ServerScriptService/Main", "source": "teammate edit", "type": "Script"},
+                ],
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(compare) as response:
+            result = json.load(response)
+        thread.join(timeout=1)
+        server.server_close()
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["syncRequired"])
+        self.assertTrue(server.completed)
+        self.assertEqual(main.read_text(encoding="utf-8"), "local edit")
+
+    def test_push_compare_requires_verified_snapshot(self):
+        main = self.root / "ServerScriptService/Main.server.lua"
+        main.parent.mkdir()
+        main.write_text("base", encoding="utf-8")
+        record_disk_snapshot(str(self.root), self.config["services"])
+        main.write_text("disk", encoding="utf-8")
+        server, thread, url = self._start("push")
         with urllib.request.urlopen(url + "/config") as response:
             config = json.load(response)
         request = urllib.request.Request(
             url + "/compare",
-            data=json.dumps(
-                {
-                    "session": config["session"],
-                    "current": [
-                        {
-                            "path": "ServerScriptService/Main",
-                            "source": "studio",
-                            "type": "Script",
-                            "kind": "source",
-                        }
-                    ],
-                }
-            ).encode(),
+            data=json.dumps({"session": config["session"], "current": []}).encode(),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(request) as response:
-            result = json.load(response)
-
-        self.assertFalse(result["ok"])
-        self.assertFalse(server.completed)
-        self.assertEqual(result["conflicts"][0]["path"], "ServerScriptService/Main")
-
-        conflict_url = (
-            url
-            + "/conflicts?session="
-            + urllib.parse.quote(config["session"], safe="")
-        )
-        with urllib.request.urlopen(conflict_url) as response:
-            pending = json.load(response)
-        self.assertEqual(pending["action"], "push")
-        self.assertEqual(pending["conflicts"], result["conflicts"])
-
-        force = urllib.request.Request(
-            url + "/force",
-            data=json.dumps({"session": config["session"]}).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(force) as response:
-            resolution = json.load(response)
-        self.assertEqual(
-            resolution["decisions"],
-            {"source:ServerScriptService/Main": "disk"},
-        )
-
-        retry = urllib.request.Request(
-            url + "/compare",
-            data=json.dumps(
-                {
-                    "session": config["session"],
-                    "current": [
-                        {
-                            "path": "ServerScriptService/Main",
-                            "source": "studio",
-                            "type": "Script",
-                            "kind": "source",
-                        }
-                    ],
-                }
-            ).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(retry) as response:
-            comparison = json.load(response)
-        self.assertTrue(comparison["ok"])
-
-        complete = urllib.request.Request(
-            url + "/complete",
-            data=json.dumps({"session": config["session"], "updated": 1}).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(complete):
-            pass
-        thread.join(timeout=1)
-        server.server_close()
-        self.assertTrue(server.completed)
-
-    def test_push_resolution_can_keep_studio_and_refresh_delta(self):
-        script = self.root / "ServerScriptService/Main.server.lua"
-        script.parent.mkdir()
-        script.write_text("base", encoding="utf-8")
-        record_disk_snapshot(str(self.root), self.config["services"])
-        script.write_text("disk", encoding="utf-8")
-        server, thread, url = self._start("push")
-        with urllib.request.urlopen(url + "/config") as response:
-            config = json.load(response)
-
-        current = [
-            {
-                "path": "ServerScriptService/Main",
-                "source": "studio",
-                "type": "Script",
-                "kind": "source",
-            }
-        ]
-
-        def compare():
-            request = urllib.request.Request(
-                url + "/compare",
-                data=json.dumps(
-                    {"session": config["session"], "current": current}
-                ).encode(),
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(request) as response:
-                return json.load(response)
-
-        self.assertFalse(compare()["ok"])
-        resolve = urllib.request.Request(
-            url + "/resolve",
-            data=json.dumps(
-                {
-                    "session": config["session"],
-                    "decisions": {"source:ServerScriptService/Main": "studio"},
-                }
-            ).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(resolve):
-            pass
-
-        # The plugin fetches the old delta before comparing. The successful
-        # comparison returns a refreshed delta after the Studio choice updates disk.
-        with urllib.request.urlopen(url + "/changes"):
-            pass
-        result = compare()
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["changes"][0]["source"], "studio")
-        self.assertEqual(script.read_text(encoding="utf-8"), "studio")
-
-        complete = urllib.request.Request(
-            url + "/complete",
-            data=json.dumps({"session": config["session"], "unchanged": 1}).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(complete):
-            pass
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            urllib.request.urlopen(request)
+        self.assertEqual(context.exception.code, 400)
+        context.exception.close()
+        server.completed = True
         thread.join(timeout=1)
         server.server_close()
 

@@ -1,46 +1,43 @@
 # Resolve conflicts
 
-AzureSlop compares the last successful snapshot with the current disk and
-Studio versions before a pull, push, or regular test. If the same tracked path
-changed differently on both sides, it stops before applying any change.
+Run `azureslop sync` before pushing changes to a Team Create place. Push checks
+all watched Studio paths against the last successful sync. If a teammate made
+an edit, push stops without applying your disk changes. Run sync and review the
+new files before pushing again.
 
-This is expected protection, not a failed sync. Do not keep rerunning a force
-operation: decide which version should win first.
+## If both sides changed the same file
 
-## Choose a version for each path
+Sync stops before writing any files and opens a conflict in the AzureSlop
+panel. The panel shows each path and its reason, one at a time:
 
-Leave the original `azureslop pull`, `push`, or `test` command running. In a
-second terminal in the same project, run:
+- **Keep local** preserves the disk version. After sync succeeds, that file is
+  still pending for your next push.
+- **Use Studio** replaces the local version with the current Studio version.
+  AzureSlop saves your old local file under `.azureslop-conflicts/` first.
 
-```sh
-azureslop resolve
-```
+When you choose **Keep local**, AzureSlop also saves the Studio copy there.
+Compare the two versions and incorporate your teammate's changes before the
+next push. The folder is outside the watched services, so it is never pushed.
+You can add `.azureslop-conflicts/` to your game's `.gitignore` after reviewing
+the saved copies.
 
-Choose **disk** or **Studio** for every listed path, then return to Studio and
-click **Apply resolution**. AzureSlop verifies neither side changed after your
-choice. A new edit becomes a new conflict instead of applying a stale choice.
+Choose a side for every path. The plugin sends the choices and retries the
+sync automatically. If either copy changes meanwhile, the choice is rejected
+and the new conflict is shown again.
 
-## Make all conflicts choose one side
+## Duplicate Studio instances
 
-The Studio panel offers a deliberate override:
+Two same-named containers with same-named scripts map to one disk file. When
+their sources differ, AzureSlop cannot safely choose one. Fix the duplicate
+names or sources in Studio, then click **Fix duplicates, then retry**. The
+plugin will not offer a blind overwrite for that case.
 
-- **Pull anyway** keeps Studio's version for every pull conflict.
-- **Push anyway** keeps disk's version for every push or test conflict.
+## Why a conflict can reappear
 
-Each requires a second confirmation. Use it only when every conflicting path
-really should have the same winner.
+The baseline updates only after a successful sync. A teammate may edit again
+while you review; the plugin then reports the new version rather than applying
+your older choice. Keep the terminal command running while using the panel and
+confirm you are in the intended Studio place.
 
-## Why conflicts can return
-
-The command's baseline is updated only after a successful operation. If an
-operation is interrupted, targets a different Studio window, or changes occur
-again before resolution, AzureSlop must re-check and can report a conflict
-again. Confirm the correct Studio place and finish one guarded operation before
-starting the next one.
-
-## Duplicate names
-
-AzureSlop maps scripts by their complete name path inside a service. Two
-same-named containers with same-named scripts map to one disk file. If their
-contents differ, the plugin blocks the operation rather than selecting one.
-Rename or reorganize them in Studio if they must have independent sources.
+The older `azureslop resolve` CLI remains as an advanced fallback, but the
+normal workflow is entirely in the plugin panel.

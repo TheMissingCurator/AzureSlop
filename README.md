@@ -1,11 +1,11 @@
 # AzureSlop
 
-Edit Roblox scripts on disk, then pull and push them from a small Studio
-plugin. No Rojo manifest, project generator, or always-running sync process.
+Edit Roblox scripts on disk, then sync and push them from a small Studio
+plugin. No Rojo manifest, project generator, or always-running process.
 
 AzureSlop is for a simple loop:
 
-1. Pull the scripts and supported GUI data from an open place into normal files.
+1. Sync the scripts and supported GUI data from an open place into normal files.
 2. Edit those files in the editor you already use.
 3. Push only your changed files back to that Studio place.
 
@@ -13,57 +13,48 @@ It is deliberately an on-demand file workflow, not a full place serializer.
 Models, Parts, terrain, and arbitrary instance properties stay in Studio.
 
 > For AI-agent control, use [Roblox Studio's built-in MCP server](https://create.roblox.com/docs/studio/mcp).
-> AzureSlop's old harness is retained for existing users but is not needed for
-> a new agent setup.
+> The former AzureSlop harness is [archived](legacy/README.md) and absent from
+> the release plugin and CLI.
 
-## Get your first pull
+## Get your first sync
 
-You need [Roblox Studio](https://create.roblox.com/docs/studio/setup), Python
-3.10+, and this repository. Open the place you want to work on in Studio before
-starting step 3.
+You need [Roblox Studio](https://create.roblox.com/docs/studio/setup) and Python
+3.10+. Open the place you want to work on in Studio before step 3.
 
-### 1. Install the CLI and build the plugin
+### 1. Install the CLI
 
-From the AzureSlop repository root, use one of these:
+Install directly from GitHub (Git must be installed):
 
 ```powershell
-# Windows PowerShell
-py -m pip install -e ./cli
-py tools/package_plugin.py
+py -m pip install "git+https://github.com/TheMissingCurator/AzureSlop.git#subdirectory=cli"
 ```
 
 ```sh
-# macOS or Linux
-python3 -m pip install -e ./cli
-python3 tools/package_plugin.py
+python3 -m pip install "git+https://github.com/TheMissingCurator/AzureSlop.git#subdirectory=cli"
 ```
 
-This creates `dist/AzureSlop.rbxmx`.
+If you're working from a clone, `py -m pip install -e ./cli` (or `python3`)
+also works.
 
 ### 2. Install the plugin once
 
-Put `dist/AzureSlop.rbxmx` in Studio's local Plugins folder, then restart
+Download the ready-made [AzureSlop.rbxmx](releases/AzureSlop.rbxmx) package.
+Put it in Studio's local Plugins folder, then restart
 Studio. On Windows, that folder is normally `%LOCALAPPDATA%\Roblox\Plugins`.
-The packager can replace an existing installed copy and save a backup:
-
-```powershell
-py tools/package_plugin.py --install "$env:LOCALAPPDATA/Roblox/Plugins/AzureSlop.rbxmx"
-```
-
 Detailed Windows, macOS, Linux/Vinegar, and update instructions are in
 [Install the plugin](docs/installation.md).
 
-### 3. Create a folder for your game and pull
+### 3. Create a folder for your game and sync
 
 ```sh
 mkdir my-game
 cd my-game
 azureslop init
-azureslop pull
+azureslop sync
 ```
 
-While `azureslop pull` is waiting, open the **AzureSlop** panel in the already
-open Studio window and click **Pull into disk**. The command finishes and your
+While `azureslop sync` is waiting, open the **AzureSlop** panel in the already
+open Studio window and click **Sync from Studio**. The command finishes and your
 files appear in `my-game/`.
 
 ### 4. Edit, then push
@@ -78,15 +69,16 @@ azureslop push
 Click **Push into Studio** in that same Studio window. AzureSlop sends only
 the changed files. That is the entire normal loop.
 
-## What to know before the second pull
+## What to know before the second sync
 
-- Pull and push are explicit commands; nothing continuously syncs in the
+- Sync and push are explicit commands; nothing continuously runs in the
   background.
 - The plugin asks for confirmation before each file operation. Grant Studio's
   localhost HTTP and script-editing permissions if it prompts you.
-- AzureSlop stops if a file changed both on disk and in Studio. See
-  [Resolve conflicts](docs/conflicts.md); do not retry or force an operation
-  blindly.
+- Push checks the whole watched Studio snapshot against your last sync. If a
+  teammate changed something, run `azureslop sync` first. If both sides changed
+  the same file, choose **Keep local** or **Use Studio** in the plugin panel.
+  See [Resolve conflicts](docs/conflicts.md).
 - `Workspace` is not included by default. Add it only when you need scripts
   beneath Workspace objects:
 
@@ -106,8 +98,7 @@ the changed files. That is the entire normal loop.
   local-place testing.
 - [Studio MCP](https://create.roblox.com/docs/studio/mcp) — recommended agent
   connection.
-- [Legacy harness](docs/harness.md) and [animation preview](docs/animation-preview.md)
-  — kept for existing installations.
+- [Archived harness](legacy/README.md) — source retained for reference.
 
 ## License
 

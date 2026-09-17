@@ -1,0 +1,23 @@
+name: Package plugin release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 -m unittest discover -s cli/tests -p test_package_plugin.py -v
+      - run: python3 tools/package_plugin.py
+      - run: |
+          gh release create "$GITHUB_REF_NAME" dist/AzureSlop.rbxmx \
+            --title "AzureSlop $GITHUB_REF_NAME" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

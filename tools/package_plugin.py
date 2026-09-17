@@ -1,4 +1,4 @@
-"""Package AzureSlop and its bundled harness modules as a local plugin model."""
+"""Package the release AzureSlop Studio plugin."""
 
 import argparse
 from datetime import datetime, timezone
@@ -7,26 +7,20 @@ import shutil
 import xml.etree.ElementTree as ET
 
 
-def package(source, modules=None, license_text=None):
+def package(source, license_text):
     root = ET.Element("roblox", version="4")
     item = ET.SubElement(root, "Item", {"class": "Script", "referent": "AzureSlop"})
     props = ET.SubElement(item, "Properties")
     ET.SubElement(props, "string", name="Name").text = "AzureSlop"
     ET.SubElement(props, "bool", name="Disabled").text = "false"
     ET.SubElement(props, "ProtectedString", name="Source").text = source
-    for name, module_source in sorted((modules or {}).items()):
-        child = ET.SubElement(item, "Item", {"class": "ModuleScript", "referent": name})
-        child_props = ET.SubElement(child, "Properties")
-        ET.SubElement(child_props, "string", name="Name").text = name
-        ET.SubElement(child_props, "ProtectedString", name="Source").text = module_source
-    if license_text is not None:
-        notice = ET.SubElement(item, "Item", {"class": "StringValue", "referent": "AzureSlopLicense"})
-        notice_props = ET.SubElement(notice, "Properties")
-        ET.SubElement(notice_props, "string", name="Name").text = "License"
-        ET.SubElement(notice_props, "string", name="Value").text = (
-            "AzureSlop\nCopyright (c) 2026 Slop Enterprises.\n"
-            "SPDX-License-Identifier: GPL-3.0-only\n\n" + license_text
-        )
+    notice = ET.SubElement(item, "Item", {"class": "StringValue", "referent": "AzureSlopLicense"})
+    notice_props = ET.SubElement(notice, "Properties")
+    ET.SubElement(notice_props, "string", name="Name").text = "License"
+    ET.SubElement(notice_props, "string", name="Value").text = (
+        "AzureSlop\nCopyright (c) 2026 Slop Enterprises.\n"
+        "SPDX-License-Identifier: GPL-3.0-only\n\n" + license_text
+    )
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
@@ -37,12 +31,10 @@ def main():
     parser.add_argument("--install", type=Path, help="Exact destination AzureSlop.rbxmx path; backs up any existing file")
     args = parser.parse_args()
     source = (root / "plugin/AzureSlop.lua").read_text(encoding="utf-8")
-    modules = {name: (root / "plugin" / f"{name}.lua").read_text(encoding="utf-8")
-               for name in ("HarnessPreview", "HarnessVision", "HarnessMotion")}
     license_text = (root / "License.md").read_text(encoding="utf-8")
-    encoded = package(source, modules, license_text)
+    encoded = package(source, license_text)
     assert ET.fromstring(encoded).find(".//ProtectedString").text == source
-    assert len(ET.fromstring(encoded).findall(".//Item")) == 2 + len(modules)
+    assert len(ET.fromstring(encoded).findall(".//Item")) == 2
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(encoded)
     print(f"Built {args.output}")

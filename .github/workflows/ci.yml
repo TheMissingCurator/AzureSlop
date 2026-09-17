@@ -29,14 +29,16 @@ jobs:
       - run: python -m unittest discover -s cli/tests -v
       - run: python tools/package_plugin.py
 
-  lua:
-    name: Offline Studio doubles / Lua 5.4
+  plugin:
+    name: Release plugin syntax and package
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - run: sudo apt-get update
       - run: sudo apt-get install -y lua5.4
-      - run: lua5.4 plugin/tests/harness_test.lua
-      - run: lua5.4 plugin/tests/preview_test.lua
-      - run: lua5.4 plugin/tests/motion_test.lua
-      - run: lua5.4 plugin/tests/vision_test.lua
+      - run: luac5.4 -p plugin/AzureSlop.lua
+      - run: python3 tools/package_plugin.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AzureSlop-plugin
+          path: dist/AzureSlop.rbxmx

@@ -23,7 +23,7 @@ def cmd_push(port_override: int | None = None):
     print(f"  Port    : {port}")
     print()
     print("Waiting for the Studio plugin. Click 'Push into Studio' in AzureSlop.")
-    print("Only added/modified files and tracked deletions will be sent.")
+    print("Studio must still match the last sync. Changed files and tracked deletions will be sent.")
     print("Press Ctrl+C to cancel.\n")
 
     try:
@@ -35,13 +35,13 @@ def cmd_push(port_override: int | None = None):
     if not result:
         return
     if result.get("ok") is False:
-        print("Push blocked: Studio has changes that are not in the disk baseline.")
+        print("Push blocked: Studio changed since your last sync.")
         for conflict in result.get("conflicts", []):
             print(
                 f"  {conflict.get('kind', 'source')}:{conflict.get('path', '?')}"
                 f" - {conflict.get('reason', 'version conflict')}"
             )
-        print("Nothing was applied. Pull after backing up local edits, or reconcile the files manually.")
+        print("Nothing was applied. Run `azureslop sync`, review any conflicts, then push again.")
         sys.exit(1)
     if result.get("skipped", 0) == 0 and not result.get("errors"):
         record_disk_snapshot(project_root, config.get("services", []))

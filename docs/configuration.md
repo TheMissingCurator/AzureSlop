@@ -35,7 +35,8 @@ descendant scripts by name path.
 ## Local copy testing
 
 Regular `azureslop test` updates existing Studio scripts using the draft-aware
-editor API. It does not create or delete instances.
+editor API. Like push, it requires a current sync first. It does not create or
+delete instances.
 
 To test structural changes safely, point AzureSlop at a saved `.rbxl` or
 `.rbxlx` baseline:

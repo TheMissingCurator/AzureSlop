@@ -1,4 +1,4 @@
-"""Interactive conflict resolution for a running AzureSlop action."""
+"""Legacy terminal fallback for resolving a running AzureSlop sync."""
 
 import json
 import os
@@ -37,6 +37,9 @@ def cmd_resolve(port_override: int | None = None) -> None:
     conflicts = pending.get("conflicts", [])
     if not conflicts:
         print("The active AzureSlop command has no unresolved conflicts.")
+        return
+    if any("duplicate Studio instances" in item.get("reason", "") for item in conflicts):
+        print("Fix differently-valued duplicate instances in Studio, then retry sync.")
         return
 
     print(f"AzureSlop Resolve ({action})")

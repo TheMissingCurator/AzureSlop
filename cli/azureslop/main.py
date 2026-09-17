@@ -5,13 +5,13 @@ AzureSlop CLI
 import argparse
 import sys
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 
 def main():
     parser = argparse.ArgumentParser(
         prog="azureslop",
-        description="Push and pull Roblox Studio sources and GUI definitions on demand.",
+        description="Sync Roblox Studio sources and GUI definitions with disk on demand.",
     )
     parser.add_argument(
         "--version", "-V",
@@ -20,8 +20,6 @@ def main():
     )
 
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
-    from azureslop.commands.harness import add_parser
-    add_parser(subparsers)
 
     # ── init ─────────────────────────────────────────────────────────────────
     init_p = subparsers.add_parser(
@@ -35,12 +33,12 @@ def main():
         help="Project name (skips the interactive prompt)",
     )
 
-    # ── pull / sync ──────────────────────────────────────────────────────────
+    # ── sync / pull ──────────────────────────────────────────────────────────
     pull_p = subparsers.add_parser(
         "pull",
-        help="Pull the active Studio place into the current project",
+        help="Alias for `azureslop sync`",
         description=(
-            "Waits for the Studio plugin, pulls one snapshot into the current "
+            "Waits for the Studio plugin and syncs one snapshot into the current "
             "project, then exits."
         ),
     )
@@ -53,8 +51,8 @@ def main():
 
     sync_p = subparsers.add_parser(
         "sync",
-        help="Deprecated alias for `azureslop pull`",
-        description="Backward-compatible alias for `azureslop pull`.",
+        help="Refresh the local project from the active Studio place",
+        description="Reconcile one Studio snapshot with the current project, then exit.",
     )
 
     # ── push ─────────────────────────────────────────────────────────────────
@@ -62,7 +60,7 @@ def main():
         "push",
         help="Push added and changed files into the active Studio place",
         description=(
-            "Applies files added or modified since the last pull/push to the "
+            "Applies files added or modified since the last sync/push to the "
             "selected Studio window, plus tracked deletions, then exits."
         ),
     )
@@ -103,9 +101,9 @@ def main():
     # ── resolve ──────────────────────────────────────────────────────────────────────────────
     resolve_p = subparsers.add_parser(
         "resolve",
-        help="Resolve a waiting pull/push conflict path by path",
+        help="Resolve a waiting sync conflict path by path",
         description=(
-            "Connects to a running AzureSlop command and asks whether disk or "
+            "Connects to a running sync command and asks whether disk or "
             "Studio should win for each conflicting path."
         ),
     )
@@ -161,17 +159,13 @@ def main():
         parser.print_help()
         sys.exit(0)
 
-    if args.command == "harness":
-        from azureslop.commands.harness import cmd_harness
-        cmd_harness(args)
-
-    elif args.command == "init":
+    if args.command == "init":
         from azureslop.commands.init import cmd_init
         cmd_init(name=args.name)
 
     elif args.command in {"pull", "sync"}:
         from azureslop.commands.sync import cmd_pull, cmd_sync
-        command = cmd_pull if args.command == "pull" else cmd_sync
+        command = cmd_sync if args.command == "sync" else cmd_pull
         command(port_override=args.port)
 
     elif args.command == "push":

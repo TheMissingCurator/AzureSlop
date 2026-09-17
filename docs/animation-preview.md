@@ -1,8 +1,9 @@
 # Animation preview and vision
 
-> **Legacy harness feature.** New AI-agent setups should use
-> [Roblox Studio MCP](https://create.roblox.com/docs/studio/mcp). This page
-> documents AzureSlop's retained harness preview tools for existing users.
+> **Archived reference for AzureSlop 0.7.** These commands are absent from the
+> current CLI and plugin; the old source is in [legacy](../legacy/README.md).
+> For current agent control, use
+> [Roblox Studio MCP](https://create.roblox.com/docs/studio/mcp).
 
 AzureSlop previews an animation on a **duplicate R6 rig in Edit mode**. It does
 not start your game, pose the original rig, publish animations, or require a

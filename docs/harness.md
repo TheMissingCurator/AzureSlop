@@ -1,8 +1,9 @@
 # AzureSlop Studio harness
 
-> **Legacy reference.** For a new AI-agent connection, use
-> [Roblox Studio's built-in MCP server](https://create.roblox.com/docs/studio/mcp)
-> instead. This page remains for existing AzureSlop harness installations.
+> **Archived reference for AzureSlop 0.7.** The commands below are absent from
+> the current CLI and plugin. The old source is in [legacy](../legacy/README.md).
+> For a current agent connection, use
+> [Roblox Studio's built-in MCP server](https://create.roblox.com/docs/studio/mcp).
 
 The harness lets GPT-6 in Codex (or another agent with terminal access) inspect
 and edit a local Roblox Studio place. It is part of the existing AzureSlop CLI

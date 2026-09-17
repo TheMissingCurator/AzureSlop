@@ -13,6 +13,7 @@ from azureslop.project import (
     disk_deletions,
     normalize_instance_path,
     record_disk_snapshot,
+    studio_changes_since_sync,
 )
 
 
@@ -225,6 +226,42 @@ class ProjectSnapshotTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["conflicts"][0]["reason"], "changed on disk and in Studio")
         self.assertEqual(script.read_text(encoding="utf-8"), "disk")
+
+    def test_keep_local_resolution_leaves_an_edit_ready_to_push(self):
+        base = [{"path": "ServerScriptService/Main", "source": "base", "type": "Script"}]
+        studio = [{"path": "ServerScriptService/Main", "source": "teammate", "type": "Script"}]
+        apply_studio_snapshot(str(self.root), SERVICES, base)
+        script = self.root / "ServerScriptService/Main.server.lua"
+        script.write_text("my edit", encoding="utf-8")
+        result = apply_studio_snapshot(
+            str(self.root), SERVICES, studio,
+            resolutions={"source:ServerScriptService/Main": "disk"},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(script.read_text(encoding="utf-8"), "my edit")
+        self.assertEqual(studio_changes_since_sync(str(self.root), SERVICES, studio), [])
+        self.assertEqual(build_disk_delta(str(self.root), SERVICES)[0]["source"], "my edit")
+        self.assertEqual(
+            (Path(result["backupDirectory"]) / "ServerScriptService/Main.server.lua.studio").read_text(encoding="utf-8"),
+            "teammate",
+        )
+
+    def test_use_studio_resolution_backs_up_local_edit(self):
+        base = [{"path": "ServerScriptService/Main", "source": "base", "type": "Script"}]
+        studio = [{"path": "ServerScriptService/Main", "source": "teammate", "type": "Script"}]
+        apply_studio_snapshot(str(self.root), SERVICES, base)
+        script = self.root / "ServerScriptService/Main.server.lua"
+        script.write_text("my edit", encoding="utf-8")
+        result = apply_studio_snapshot(
+            str(self.root), SERVICES, studio,
+            resolutions={"source:ServerScriptService/Main": "studio"},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(script.read_text(encoding="utf-8"), "teammate")
+        self.assertEqual(
+            (Path(result["backupDirectory"]) / "ServerScriptService/Main.server.lua.local").read_text(encoding="utf-8"),
+            "my edit",
+        )
 
     def test_pull_accepts_a_studio_only_change(self):
         apply_studio_snapshot(
