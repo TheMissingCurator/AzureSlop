@@ -16,8 +16,22 @@ jobs:
       - run: python3 -m unittest discover -s cli/tests -p test_package_plugin.py -v
       - run: python3 tools/package_plugin.py
       - run: |
-          gh release create "$GITHUB_REF_NAME" dist/AzureSlop.rbxmx \
-            --title "AzureSlop $GITHUB_REF_NAME" \
-            --generate-notes
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            existing_digest="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[] | select(.name == "AzureSlop.rbxmx") | .digest')"
+            if [ -z "$existing_digest" ]; then
+              gh release upload "$GITHUB_REF_NAME" dist/AzureSlop.rbxmx
+            else
+              expected_digest="sha256:$(sha256sum dist/AzureSlop.rbxmx | cut -d ' ' -f 1)"
+              if [ "$existing_digest" != "$expected_digest" ]; then
+                echo "Release asset AzureSlop.rbxmx differs from this tag's package; inspect it before replacing." >&2
+                exit 1
+              fi
+              echo "Release already contains the matching AzureSlop.rbxmx asset."
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" dist/AzureSlop.rbxmx \
+              --title "AzureSlop $GITHUB_REF_NAME" \
+              --generate-notes
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
